@@ -1,5 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import './index.css'
+import { db } from './firebase'
+import { ref, onValue, set } from "firebase/database"
 
 const TIMES = ['06:00', '09:00', '13:00', '16:00', '19:00'];
 const DAYS_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'];
@@ -50,7 +52,6 @@ function App() {
     if (now > end) {
       nextOpening.setDate(nextOpening.getDate() + 7);
     } else if (now < start) {
-      // should theoretically not happen with our diff logic but for safety
       nextOpening = start;
     }
 
@@ -59,29 +60,19 @@ function App() {
       end,
       isOpen,
       nextOpening,
-      reservableStart: start, // Users can book for slots >= Tue 12:00
-      reservableEnd: end      // up to next Tue 09:00
+      reservableStart: start,
+      reservableEnd: end
     };
   }, [now]);
 
+  // Sync with Firebase Realtime Database
   useEffect(() => {
-    const saved = localStorage.getItem('reservations');
-    if (saved) setReservations(JSON.parse(saved));
-  }, []);
-
-  useEffect(() => {
-    localStorage.setItem('reservations', JSON.stringify(reservations));
-  }, [reservations]);
-
-  // Listen for storage changes from other tabs
-  useEffect(() => {
-    const handleStorageChange = (e) => {
-      if (e.key === 'reservations' && e.newValue) {
-        setReservations(JSON.parse(e.newValue));
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-    return () => window.removeEventListener('storage', handleStorageChange);
+    const resRef = ref(db, 'reservations');
+    const unsubscribe = onValue(resRef, (snapshot) => {
+      const data = snapshot.val();
+      setReservations(data || {});
+    });
+    return () => unsubscribe();
   }, []);
 
   const isSlotReservable = (dateStr, time) => {
@@ -119,37 +110,43 @@ function App() {
       return;
     }
 
-    // Double check if someone else reserved it in the meantime
-    // We re-read from localStorage for the latest truth
-    const latestReservations = JSON.parse(localStorage.getItem('reservations') || '{}');
-    if (latestReservations[selectedDate]?.[activeSlot]) {
-      setReservations(latestReservations); // Update local state
-      setModalMode('taken'); // Show cute error
+    // Checking directly against current state since it's synced via Firebase
+    if (reservations[selectedDate]?.[activeSlot]) {
+      setModalMode('taken');
       return;
     }
 
-    setReservations(prev => ({
-      ...prev,
+    const newReservations = {
+      ...reservations,
       [selectedDate]: {
-        ...prev[selectedDate],
+        ...reservations[selectedDate],
         [activeSlot]: { name: userName, password: password }
       }
-    }));
+    };
 
-    closeModal();
+    set(ref(db, 'reservations'), newReservations)
+      .then(() => closeModal())
+      .catch((err) => {
+        console.error(err);
+        setError('예약 저장 중 오류가 발생했습니다.');
+      });
   };
 
   const handleCancelReservation = () => {
     const reservedInfo = reservations[selectedDate]?.[activeSlot];
     if (reservedInfo && reservedInfo.password === password) {
-      setReservations(prev => {
-        const updatedDateInfo = { ...prev[selectedDate] };
-        delete updatedDateInfo[activeSlot];
-        const newRes = { ...prev, [selectedDate]: updatedDateInfo };
-        if (Object.keys(updatedDateInfo).length === 0) delete newRes[selectedDate];
-        return newRes;
-      });
-      closeModal();
+      const updatedDateInfo = { ...reservations[selectedDate] };
+      delete updatedDateInfo[activeSlot];
+
+      const newRes = { ...reservations, [selectedDate]: updatedDateInfo };
+      if (Object.keys(updatedDateInfo).length === 0) delete newRes[selectedDate];
+
+      set(ref(db, 'reservations'), newRes)
+        .then(() => closeModal())
+        .catch((err) => {
+          console.error(err);
+          setError('취소 중 오류가 발생했습니다.');
+        });
     } else {
       setError('비밀번호가 일치하지 않습니다.');
     }
@@ -180,7 +177,6 @@ function App() {
       const isSelected = selectedDate === dateStr;
       const hasReservation = reservations[dateStr] && Object.keys(reservations[dateStr]).length > 0;
 
-      // Check if any slot on this day is reservable
       const isDayReachable = TIMES.some(t => isSlotReservable(dateStr, t));
 
       days.push(

@@ -415,12 +415,11 @@ body::after {
   background: white;
   border-radius: 50px;
   padding: 4.5rem 4rem;
-  width: 90%;
+  width: 95%;
   max-width: 500px;
   box-shadow: 0 45px 120px rgba(0, 0, 0, 0.2);
   border: 6px solid white;
   animation: modalEnter 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
-  /* Force vertical centering within the flex overlay */
   margin: auto;
 }
 
@@ -564,7 +563,6 @@ button.danger {
 
 .taken-modal-content h2 {
   color: #fb7185;
-  /* Caring Rose color */
   margin-bottom: 1.5rem !important;
 }
 
@@ -579,33 +577,152 @@ button.danger {
   margin-top: 1.5rem;
 }
 
+/* Responsive Media Queries Optimization */
 @media (max-width: 768px) {
+  #root {
+    padding: 1rem;
+  }
+
   .reserve-container {
-    padding: 3rem 1.5rem;
-    border-radius: 40px;
+    padding: 2.5rem 1.5rem;
+    border-radius: 32px;
   }
 
   .cute-title {
-    font-size: 2.8rem;
+    font-size: 2.5rem;
+    margin-bottom: 2rem;
   }
 
-  .modal {
-    padding: 3.5rem 1.8rem;
-    border-radius: 40px;
+  .status-banner {
+    padding: 1rem;
+    margin-bottom: 2.5rem;
+    font-size: 0.9rem;
+  }
+
+  .calendar-section {
+    padding: 1.5rem;
+    margin-bottom: 2.5rem;
+    border-radius: 28px;
   }
 
   .calendar-header {
     gap: 1.5rem;
+    margin-bottom: 2rem;
   }
 
   .calendar-header h2 {
     min-width: auto;
-    font-size: 1.8rem;
+    font-size: 1.6rem;
   }
 
   .month-nav {
-    width: 50px;
-    height: 50px;
-    border-radius: 18px;
+    width: 48px;
+    height: 48px;
+    border-radius: 16px;
+    font-size: 1.3rem;
+  }
+
+  .calendar-grid {
+    gap: 0.5rem;
+  }
+
+  .calendar-day {
+    border-radius: 12px;
+  }
+
+  .date-num {
+    font-size: 1.1rem;
+  }
+
+  .selected-info h3 {
+    font-size: 1.35rem;
+    padding: 0.7rem 2rem;
+  }
+
+  .time-grid {
+    gap: 1.2rem;
+    grid-template-columns: 1fr;
+  }
+
+  .time-slot {
+    padding: 2.2rem 1.2rem;
+    border-radius: 28px;
+  }
+
+  .time-slot .time {
+    font-size: 2.1rem;
+  }
+
+  .modal {
+    padding: 3rem 1.8rem;
+    border-radius: 35px;
+  }
+
+  .modal h2 {
+    font-size: 2.3rem;
+  }
+
+  .modal p {
+    font-size: 1.05rem;
+    margin-bottom: 2.2rem;
+  }
+
+  input {
+    padding: 1.2rem 1.5rem;
+    font-size: 1.05rem;
+  }
+
+  button {
+    padding: 1.2rem;
+    font-size: 1.1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .reserve-container {
+    padding: 2rem 1rem;
+    border-radius: 28px;
+  }
+
+  .cute-title {
+    font-size: 2rem;
+  }
+
+  .calendar-header h2 {
+    font-size: 1.4rem;
+  }
+
+  .month-nav {
+    width: 42px;
+    height: 42px;
+  }
+
+  .day-name {
+    font-size: 0.85rem;
+  }
+
+  .date-num {
+    font-size: 1rem;
+  }
+
+  .time-slot .time {
+    font-size: 1.8rem;
+  }
+
+  .time-slot .status {
+    font-size: 0.95rem;
+  }
+
+  .modal {
+    padding: 2.5rem 1.2rem;
+  }
+
+  .modal h2 {
+    font-size: 2rem;
+  }
+
+  .input-group label {
+    font-size: 0.95rem;
+    padding-left: 0.5rem;
   }
 }

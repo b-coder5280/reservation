@@ -43,7 +43,7 @@ function App() {
 
     let end = new Date(start);
     end.setDate(end.getDate() + 7);
-    end.setHours(9, 0, 0, 0); // Window ends next Tuesday 09:00
+    end.setHours(19, 0, 0, 0); // Window ends next Tuesday 19:00
 
     const isOpen = now >= start && now <= end;
 
@@ -55,12 +55,17 @@ function App() {
       nextOpening = start;
     }
 
+    // Exclude the starting Tuesday from reservable slots (as per user request)
+    let validStart = new Date(start);
+    validStart.setDate(validStart.getDate() + 1);
+    validStart.setHours(0, 0, 0, 0);
+
     return {
       start,
       end,
       isOpen,
       nextOpening,
-      reservableStart: start,
+      reservableStart: validStart,
       reservableEnd: end
     };
   }, [now]);

@@ -6,6 +6,29 @@ import { ref, onValue, set } from "firebase/database"
 const TIMES = ['06:00', '09:00', '13:00', '16:00', '19:00'];
 const DAYS_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 
+const DISTINCT_COLORS = [
+  '#FFD1DC', // Light Pink
+  '#FFDFD3', // Peach
+  '#FFFFD1', // Cream Yellow
+  '#D1FFD6', // Pale Green
+  '#D1F5FF', // Light Sky
+  '#E0D1FF', // Lavender
+  '#FFD1F5', // Light Rose
+  '#D1FFF3', // Mint
+  '#FFE5D1', // Apricot
+  '#E2E2E2', // Light Silver
+  '#C4F5E1', // Magic Mint
+  '#DAE8FC', // Periwinkle
+  '#FFABAB', // Light Red
+  '#FFC3A0', // Deep Peach
+  '#D5AAFF', // Soft Purple
+  '#85E3FF', // Cyan
+  '#B9FBC0', // Light Emerald
+  '#FBE7C6', // Bisque
+  '#FF9CEE', // Hot Pink Light
+  '#A0C4FF', // Cornflower Light
+];
+
 function App() {
   const [now, setNow] = useState(new Date());
   const [currentMonth, setCurrentMonth] = useState(new Date());
@@ -16,6 +39,7 @@ function App() {
   const [userName, setUserName] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
+  const [showWeekly, setShowWeekly] = useState(false);
 
   // Update current time every minute
   useEffect(() => {
@@ -79,6 +103,30 @@ function App() {
     });
     return () => unsubscribe();
   }, []);
+
+  // Calculate distinct colors for each user in the current view
+  const nameColorMap = useMemo(() => {
+    const allNames = new Set();
+    Object.values(reservations).forEach(daySlots => {
+      Object.values(daySlots).forEach(res => {
+        if (res && res.name) allNames.add(res.name.trim());
+      });
+    });
+
+    const sortedNames = Array.from(allNames).sort();
+    const map = {};
+    sortedNames.forEach((name, index) => {
+      map[name] = DISTINCT_COLORS[index % DISTINCT_COLORS.length];
+    });
+    console.log('Detected Names:', sortedNames); // Debugging purpose
+    return map;
+  }, [reservations]);
+
+  const getColorForName = (name) => {
+    if (!name) return '#F7FAFC';
+    const trimmedName = name.trim();
+    return nameColorMap[trimmedName] || '#E2E2E2';
+  };
 
   const isSlotReservable = (dateStr, time) => {
     if (!bookingWindow.isOpen) return false;
@@ -198,17 +246,27 @@ function App() {
     return days;
   };
 
+  const getLocalDateString = (date) => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
   return (
     <>
       <div className="reserve-container">
         <h1 className="cute-title">✨ Experiment Reservation 🧪</h1>
 
         <div className={`status-banner ${bookingWindow.isOpen ? 'open' : 'closed'}`}>
-          {bookingWindow.isOpen ? (
-            <p>🟢 현재 예약 가능 (종료: {bookingWindow.end.toLocaleDateString()} {bookingWindow.end.getHours()}:00)</p>
-          ) : (
-            <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 12:00 PM)</p>
-          )}
+          <div className="status-info">
+            {bookingWindow.isOpen ? (
+              <p>🟢 현재 예약 가능 (종료: {bookingWindow.end.toLocaleDateString()} {bookingWindow.end.getHours()}:00)</p>
+            ) : (
+              <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 12:00 PM)</p>
+            )}
+            <button className="weekly-btn" onClick={() => setShowWeekly(true)}>전체 일정 확인 📅</button>
+          </div>
         </div>
 
         <div className="calendar-section">
@@ -242,7 +300,7 @@ function App() {
                 <span className="status">
                   {!reservable ? '예약 불가' : (reservedInfo ? '예약 완료' : '예약 가능')}
                 </span>
-                {reservedInfo && <div className="reserved-name">{reservedInfo.name}</div>}
+                {reservedInfo && <div className="reserved-name" style={{ backgroundColor: getColorForName(reservedInfo.name), color: '#1A202C' }}>{reservedInfo.name}</div>}
               </div>
             );
           })}
@@ -292,6 +350,78 @@ function App() {
               ) : modalMode === 'cancel' ? (
                 <button className="danger" onClick={handleCancelReservation}>예약 취소</button>
               ) : null}
+            </div>
+          </div>
+        </div>
+      )}
+      {showWeekly && (
+        <div className="modal-overlay" onClick={() => setShowWeekly(false)}>
+          <div className="modal weekly-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="weekly-header">
+              <h2>전체 일정 확인</h2>
+              <button className="close-icon-btn" onClick={() => setShowWeekly(false)}>×</button>
+            </div>
+            <div className="weekly-scroll-area">
+              <table className="weekly-table">
+                <thead>
+                  <tr>
+                    <th>시간</th>
+                    {(() => {
+                      const days = [];
+                      let curr = new Date(bookingWindow.reservableStart);
+                      for (let i = 0; i < 7; i++) {
+                        days.push(new Date(curr));
+                        curr.setDate(curr.getDate() + 1);
+                      }
+                      return days.map(d => (
+                        <th key={getLocalDateString(d)}>
+                          <div className="day-label">{DAYS_OF_WEEK[d.getDay()]}</div>
+                          <div className="date-label">{d.getMonth() + 1}/{d.getDate()}</div>
+                        </th>
+                      ));
+                    })()}
+                  </tr>
+                </thead>
+                <tbody>
+                  {TIMES.map(time => (
+                    <tr key={time}>
+                      <td className="time-col">{time}</td>
+                      {(() => {
+                        const days = [];
+                        let curr = new Date(bookingWindow.reservableStart);
+                        for (let i = 0; i < 7; i++) {
+                          days.push(new Date(curr));
+                          curr.setDate(curr.getDate() + 1);
+                        }
+                        return days.map(d => {
+                          const dateStr = getLocalDateString(d);
+                          const res = reservations[dateStr]?.[time];
+                          const nameColor = getColorForName(res?.name);
+
+                          return (
+                            <td
+                              key={`${dateStr}-${time}`}
+                              className={res ? 'has-res' : ''}
+                              style={res ? {
+                                backgroundColor: nameColor,
+                                border: `2px solid ${nameColor}`,
+                                boxShadow: '0 4px 6px rgba(0,0,0,0.05)'
+                              } : {}}
+                            >
+                              <div className="slot-content">
+                                <span className="slot-time">{time}</span>
+                                {res ? (
+                                  <span className="res-name-tag" style={{ color: '#1A202C' }}>{res.name}</span>
+                                ) : <span className="empty-slot">-</span>}
+                              </div>
+                            </td>
+                          );
+                        });
+                      })()}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>

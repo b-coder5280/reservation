@@ -56,9 +56,13 @@ function App() {
     let start = new Date(now);
     start.setHours(12, 0, 0, 0);
 
-    let diff = day - 2; // Days from Tuesday
-    if (diff < 0) diff += 7;
-    // Special case: Tuesday but before 12:00 PM - part of the previous cycle
+    // Calculate days since MOST RECENT Tuesday 12:00
+    // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
+    let diff = day - 2;
+    if (diff < 0) diff += 7; // If Sun/Mon, go back to previous week's Tue
+
+    // Boundary check: If today is Tuesday but before 12:00, the current cycle 
+    // actually started on the Tuesday of the previous week.
     if (day === 2 && hour < 12) {
       diff = 7;
     }
@@ -213,6 +217,43 @@ function App() {
     setError('');
   };
 
+  const handleDownload = () => {
+    const { reservableStart, reservableEnd } = bookingWindow;
+    let content = "";
+
+    // Iterate from reservableStart to reservableEnd day by day
+    const current = new Date(reservableStart);
+    while (current <= reservableEnd) {
+      const dateStr = getLocalDateString(current);
+      const dayName = DAYS_OF_WEEK[current.getDay()];
+      const dayReservations = reservations[dateStr];
+
+      if (dayReservations) {
+        const bookedTimes = TIMES.filter(t => dayReservations[t]);
+        if (bookedTimes.length > 0) {
+          const resList = bookedTimes
+            .map(t => `${t} ${dayReservations[t].name}`)
+            .join(', ');
+          content += `${dayName} - ${resList}\n`;
+        }
+      }
+      current.setDate(current.getDate() + 1);
+    }
+
+    if (!content) {
+      alert("이번 주 예약 내역이 없습니다.");
+      return;
+    }
+
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `reservations_${new Date().toISOString().split('T')[0]}.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
   const renderCalendar = () => {
     const year = currentMonth.getFullYear();
     const month = currentMonth.getMonth();
@@ -265,7 +306,10 @@ function App() {
             ) : (
               <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 12:00 PM)</p>
             )}
-            <button className="weekly-btn" onClick={() => setShowWeekly(true)}>전체 일정 확인 📅</button>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <button className="weekly-btn" onClick={() => setShowWeekly(true)}>📅 전체 일정 확인</button>
+              <button className="weekly-btn" onClick={handleDownload}>📥 다운로드</button>
+            </div>
           </div>
         </div>
 

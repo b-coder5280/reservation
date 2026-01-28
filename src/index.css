@@ -199,13 +199,12 @@ body::after {
 
 /* Weekly Modal - MASSIVE EXPANSION */
 .weekly-modal {
-  max-width: 95vw !important;
-  /* Force override of the 500px limit */
-  width: 95vw !important;
-  padding: 2.5rem;
-  max-height: 92vh;
-  margin: 4vh auto;
-  border-radius: 40px;
+  max-width: 98vw !important;
+  width: 98vw !important;
+  padding: 1rem !important;
+  max-height: 96vh;
+  margin: 2vh auto;
+  border-radius: 24px !important;
   display: flex;
   flex-direction: column;
 }
@@ -221,7 +220,7 @@ body::after {
 }
 
 .weekly-header h2 {
-  font-size: 2.8rem;
+  font-size: 1.8rem;
   margin-bottom: 0;
   color: var(--secondary);
 }
@@ -254,23 +253,21 @@ body::after {
 .weekly-table {
   width: 100%;
   border-collapse: separate;
-  border-spacing: 0.8rem;
-  /* Reduced from 1.2rem */
+  border-spacing: 4px;
   table-layout: fixed;
 }
 
 .weekly-table th {
   background: #EDF2F7;
-  padding: 1rem 0.5rem;
-  /* Reduced padding */
-  border-radius: 12px;
+  padding: 0.4rem 0.2rem;
+  border-radius: 8px;
   font-weight: 800;
 }
 
 .weekly-table .day-label {
-  font-size: 1.4rem;
-  /* Bigger day labels */
+  font-size: 1.2rem;
   color: #1E293B;
+  margin-bottom: 2px;
 }
 
 .weekly-table .date-label {
@@ -281,26 +278,23 @@ body::after {
 
 .weekly-table td {
   text-align: center;
-  padding: 1.2rem 0.5rem;
-  /* Much taller cells */
-  border-radius: 15px;
+  padding: 0.8rem 0.4rem;
+  border-radius: 12px;
   background: #FDFDFD;
   border: 1px solid #F1F5F9;
-  font-weight: 700;
+  font-weight: 800;
+  min-height: 60px;
 }
 
 .weekly-table .time-col {
-  background: #F1F5F9;
-  color: #475569;
+  background: #E2E8F0;
+  color: #1E293B;
   font-weight: 800;
-  width: 110px;
-  font-size: 1.3rem;
-  /* Bigger time labels */
+  width: 90px;
+  font-size: 1.1rem;
 }
 
-.weekly-table td.has-res {
-  /* Dynamic colors applied via JS */
-}
+
 
 .slot-content {
   display: flex;
@@ -310,15 +304,17 @@ body::after {
 }
 
 .slot-time {
-  font-size: 0.6rem;
-  color: #718096;
-  font-weight: 600;
+  font-size: 0.8rem;
+  color: #64748B;
+  font-weight: 700;
+  margin-bottom: 4px;
 }
 
 .res-name-tag {
   font-weight: 800;
-  font-size: 0.85rem;
+  font-size: 1.1rem;
   word-break: keep-all;
+  color: #1A202C !important;
 }
 
 .empty-slot {
@@ -900,16 +896,16 @@ button.danger {
   }
 
   .weekly-table {
-    min-width: 1000px;
-    border-spacing: 0.4rem;
+    min-width: 100%;
+    border-spacing: 3px;
   }
 
   .weekly-header h2 {
-    font-size: 1.8rem;
+    font-size: 1.5rem;
   }
 
   .weekly-table .day-label {
-    font-size: 1.1rem;
+    font-size: 0.9rem;
   }
 
   .weekly-table td {

@@ -3,7 +3,7 @@ import './index.css'
 import { db } from './firebase'
 import { ref, onValue, set } from "firebase/database"
 
-const TIMES = ['06:00', '09:00', '13:00', '16:00', '19:00'];
+const TIMES = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'];
 const DAYS_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'];
 
 const DISTINCT_COLORS = [
@@ -71,7 +71,7 @@ function App() {
 
     let end = new Date(start);
     end.setDate(end.getDate() + 7);
-    end.setHours(19, 0, 0, 0); // Window ends next Tuesday 19:00
+    end.setHours(21, 0, 0, 0); // Window ends next Tuesday 21:00
 
     const isOpen = now >= start && now <= end;
 

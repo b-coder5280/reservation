@@ -40,6 +40,9 @@ function App() {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [showWeekly, setShowWeekly] = useState(false);
+  const [showAdminModal, setShowAdminModal] = useState(false);
+  const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
+  const [adminPassword, setAdminPassword] = useState('');
 
   // Update current time every minute
   useEffect(() => {
@@ -173,6 +176,39 @@ function App() {
       return;
     }
 
+    // Check for limit: 3 slots for Mon-Fri at 09:00, 12:00, 15:00
+    const restrictedTimes = ['09:00', '12:00', '15:00'];
+    const restrictedDays = ['월', '화', '수', '목', '금'];
+    const currentDayName = DAYS_OF_WEEK[new Date(selectedDate).getDay()];
+
+    if (restrictedTimes.includes(activeSlot) && restrictedDays.includes(currentDayName)) {
+      let count = 0;
+      const { reservableStart, reservableEnd } = bookingWindow;
+
+      const currentSearch = new Date(reservableStart);
+      while (currentSearch <= reservableEnd) {
+        const ds = getLocalDateString(currentSearch);
+        const dayName = DAYS_OF_WEEK[currentSearch.getDay()];
+
+        if (restrictedDays.includes(dayName)) {
+          const dayRes = reservations[ds];
+          if (dayRes) {
+            restrictedTimes.forEach(t => {
+              if (dayRes[t] && dayRes[t].name?.trim() === userName.trim()) {
+                count++;
+              }
+            });
+          }
+        }
+        currentSearch.setDate(currentSearch.getDate() + 1);
+      }
+
+      if (count >= 3) {
+        setModalMode('over-limit');
+        return;
+      }
+    }
+
     const newReservations = {
       ...reservations,
       [selectedDate]: {
@@ -215,6 +251,17 @@ function App() {
     setUserName('');
     setPassword('');
     setError('');
+    setShowAdminModal(false);
+    setAdminPassword('');
+  };
+
+  const handleAdminLogin = () => {
+    if (adminPassword === 'tjdus122') {
+      setIsAdminAuthenticated(true);
+      setError('');
+    } else {
+      setError('비밀번호가 올바르지 않습니다.');
+    }
   };
 
   const handleDownload = () => {
@@ -308,7 +355,8 @@ function App() {
             )}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className="weekly-btn" onClick={() => setShowWeekly(true)}>📅 전체 일정 확인</button>
-              <button className="weekly-btn" onClick={handleDownload}>📥 다운로드</button>
+              <button className="weekly-btn" onClick={handleDownload}>📥 리스트 다운</button>
+              <button className="weekly-btn" onClick={() => { setShowAdminModal(true); setIsAdminAuthenticated(false); }}>🔑 관리자</button>
             </div>
           </div>
         </div>
@@ -376,12 +424,19 @@ function App() {
                   <input id="cancel-password" type="password" placeholder="예약 시 설정한 비밀번호" value={password} onChange={(e) => setPassword(e.target.value)} autoFocus onKeyDown={(e) => e.key === 'Enter' && handleCancelReservation()} />
                 </div>
               </>
-            ) : (
+            ) : modalMode === 'taken' ? (
               <div className="taken-modal-content">
                 <div className="dog-emoji">🐕💨</div>
                 <h2>어라라! 늦어버렸다!</h2>
                 <p>방금 다른 분이 이 자리를 예약하셨어요.<br />발빠른 강아지가 먼저 채갔나봐요!</p>
                 <p className="sub-msg">다른 남은 자리를 찾아볼까요? 🐾</p>
+              </div>
+            ) : (
+              <div className="taken-modal-content">
+                <div className="dog-emoji">🚫🐶</div>
+                <h2>앗! 예약 제한이에요!</h2>
+                <p>평일(월~금) 09시, 12시, 15시 타임은<br />주당 최대 3개까지만 예약 가능합니다.</p>
+                <p className="sub-msg">다른 시간대나 날짜를 확인해주세요! 🐾</p>
               </div>
             )}
             {error && <p className="error-message">{error}</p>}
@@ -467,6 +522,65 @@ function App() {
                 </tbody>
               </table>
             </div>
+          </div>
+        </div>
+      )}
+      {showAdminModal && (
+        <div className="modal-overlay" onClick={closeModal}>
+          <div className="modal weekly-modal" onClick={(e) => e.stopPropagation()}>
+            {!isAdminAuthenticated ? (
+              <>
+                <h2>관리자 로그인</h2>
+                <div className="input-group">
+                  <label htmlFor="admin-pw">관리자 암호</label>
+                  <input
+                    id="admin-pw"
+                    type="password"
+                    placeholder="암호를 입력하세요"
+                    value={adminPassword}
+                    onChange={(e) => setAdminPassword(e.target.value)}
+                    onKeyDown={(e) => e.key === 'Enter' && handleAdminLogin()}
+                    autoFocus
+                  />
+                </div>
+                {error && <p className="error-message">{error}</p>}
+                <div className="modal-actions">
+                  <button className="secondary" onClick={closeModal}>닫기</button>
+                  <button className="primary" onClick={handleAdminLogin}>로그인</button>
+                </div>
+              </>
+            ) : (
+              <div className="admin-view">
+                <h2>📋 전체 예약 비밀번호 리스트</h2>
+                <div className="weekly-scroll-area" style={{ maxHeight: '60vh', marginTop: '1rem' }}>
+                  <table className="weekly-table" style={{ fontSize: '0.9rem' }}>
+                    <thead>
+                      <tr>
+                        <th>날짜</th>
+                        <th>시간</th>
+                        <th>이름</th>
+                        <th>비밀번호</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {Object.keys(reservations).sort().map(date => (
+                        Object.keys(reservations[date]).sort().map(time => (
+                          <tr key={`${date}-${time}`}>
+                            <td>{date}</td>
+                            <td>{time}</td>
+                            <td>{reservations[date][time].name}</td>
+                            <td style={{ color: '#E11D48', fontWeight: 'bold' }}>{reservations[date][time].password}</td>
+                          </tr>
+                        ))
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="modal-actions">
+                  <button className="primary" onClick={closeModal}>확인 완료</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

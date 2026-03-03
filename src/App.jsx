@@ -51,6 +51,10 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  const hasEarlyAccess = useMemo(() => {
+    return new URLSearchParams(window.location.search).get('early') === 'true';
+  }, []);
+
   // Reservation Rule Logic
   const bookingWindow = useMemo(() => {
     const current = new Date(now);
@@ -58,17 +62,17 @@ function App() {
     const hour = current.getHours();
     const minute = current.getMinutes();
     const totalMinutes = hour * 60 + minute;
-    const openMinutes = 11 * 60 + 58;
+    const openMinutes = hasEarlyAccess ? (11 * 60 + 40) : (12 * 60);
 
     let start = new Date(now);
-    start.setHours(11, 58, 0, 0);
+    start.setHours(hasEarlyAccess ? 11 : 12, hasEarlyAccess ? 40 : 0, 0, 0);
 
-    // Calculate days since MOST RECENT Tuesday 11:58
+    // Calculate days since MOST RECENT Tuesday opening time
     // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
     let diff = day - 2;
     if (diff < 0) diff += 7; // If Sun/Mon, go back to previous week's Tue
 
-    // Boundary check: If today is Tuesday but before 11:58, the current cycle 
+    // Boundary check: If today is Tuesday but before opening, the current cycle 
     // actually started on the Tuesday of the previous week.
     if (day === 2 && totalMinutes < openMinutes) {
       diff = 7;
@@ -151,6 +155,17 @@ function App() {
   const isSlotReservable = (dateStr, time) => {
     if (!bookingWindow.isOpen) return false;
 
+    const [hours, minutes] = time.split(':').map(Number);
+    const slotTime = new Date(dateStr);
+    slotTime.setHours(hours, minutes, 0, 0);
+
+    return slotTime >= bookingWindow.reservableStart && slotTime <= bookingWindow.reservableEnd;
+  };
+
+  const isReservationVisible = (dateStr, time) => {
+    if (hasEarlyAccess) return true;
+
+    // Regular users can only see reservations within their current viewable/reservable window
     const [hours, minutes] = time.split(':').map(Number);
     const slotTime = new Date(dateStr);
     slotTime.setHours(hours, minutes, 0, 0);
@@ -328,19 +343,18 @@ function App() {
     for (let d = 1; d <= daysInMonth; d++) {
       const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
       const isToday = now.toISOString().split('T')[0] === dateStr;
-      const isSelected = selectedDate === dateStr;
-      const hasReservation = reservations[dateStr] && Object.keys(reservations[dateStr]).length > 0;
-
       const isDayReachable = TIMES.some(t => isSlotReservable(dateStr, t));
+      const hasVisibleReservation = reservations[dateStr] && Object.keys(reservations[dateStr]).some(t => isReservationVisible(dateStr, t));
+      const isSelected = selectedDate === dateStr;
 
       days.push(
         <div
           key={d}
-          className={`calendar-day ${isSelected ? 'active' : ''} ${isToday ? 'today' : ''} ${hasReservation ? 'has-res' : ''} ${!isDayReachable ? 'locked' : ''}`}
+          className={`calendar-day ${isSelected ? 'active' : ''} ${isToday ? 'today' : ''} ${hasVisibleReservation ? 'has-res' : ''} ${!isDayReachable ? 'locked' : ''}`}
           onClick={() => setSelectedDate(dateStr)}
         >
           <span className="date-num">{d}</span>
-          {hasReservation && <div className="res-dot"></div>}
+          {hasVisibleReservation && <div className="res-dot"></div>}
         </div>
       );
     }
@@ -366,7 +380,7 @@ function App() {
             ) : bookingWindow.isOpen ? (
               <p>🟢 현재 예약 가능 (종료: {bookingWindow.end.toLocaleDateString()} {bookingWindow.end.getHours()}:00)</p>
             ) : (
-              <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 11:58 AM)</p>
+              <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 12:00 PM)</p>
             )}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className="weekly-btn" onClick={() => setShowWeekly(true)}>📅 전체 일정 확인</button>
@@ -395,7 +409,9 @@ function App() {
 
         <div className="time-grid">
           {TIMES.map((time) => {
-            const reservedInfo = reservations[selectedDate]?.[time];
+            const rawReservedInfo = reservations[selectedDate]?.[time];
+            const isVisible = isReservationVisible(selectedDate, time);
+            const reservedInfo = isVisible ? rawReservedInfo : null;
             const reservable = isSlotReservable(selectedDate, time);
             return (
               <div

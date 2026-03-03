@@ -43,6 +43,7 @@ function App() {
   const [showAdminModal, setShowAdminModal] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [adminPassword, setAdminPassword] = useState('');
+  const [firebaseError, setFirebaseError] = useState(null);
 
   // Update current time every minute
   useEffect(() => {
@@ -55,18 +56,21 @@ function App() {
     const current = new Date(now);
     const day = current.getDay(); // 0: Sun, 1: Mon, 2: Tue ...
     const hour = current.getHours();
+    const minute = current.getMinutes();
+    const totalMinutes = hour * 60 + minute;
+    const openMinutes = 11 * 60 + 58;
 
     let start = new Date(now);
-    start.setHours(12, 0, 0, 0);
+    start.setHours(11, 58, 0, 0);
 
-    // Calculate days since MOST RECENT Tuesday 12:00
+    // Calculate days since MOST RECENT Tuesday 11:58
     // 0:Sun, 1:Mon, 2:Tue, 3:Wed, 4:Thu, 5:Fri, 6:Sat
     let diff = day - 2;
     if (diff < 0) diff += 7; // If Sun/Mon, go back to previous week's Tue
 
-    // Boundary check: If today is Tuesday but before 12:00, the current cycle 
+    // Boundary check: If today is Tuesday but before 11:58, the current cycle 
     // actually started on the Tuesday of the previous week.
-    if (day === 2 && hour < 12) {
+    if (day === 2 && totalMinutes < openMinutes) {
       diff = 7;
     }
 
@@ -104,9 +108,18 @@ function App() {
   // Sync with Firebase Realtime Database
   useEffect(() => {
     const resRef = ref(db, 'reservations');
+    console.log('Firebase Sync: Starting connection to /reservations');
     const unsubscribe = onValue(resRef, (snapshot) => {
       const data = snapshot.val();
+      console.log('Firebase Sync Success:', data ? 'Data received' : 'No data (empty or null)');
+      if (data) {
+        console.log('Detected Keys in /reservations:', Object.keys(data));
+      }
       setReservations(data || {});
+      setFirebaseError(null);
+    }, (error) => {
+      console.error('Firebase Sync Error:', error);
+      setFirebaseError(error.message);
     });
     return () => unsubscribe();
   }, []);
@@ -348,10 +361,12 @@ function App() {
 
         <div className={`status-banner ${bookingWindow.isOpen ? 'open' : 'closed'}`}>
           <div className="status-info">
-            {bookingWindow.isOpen ? (
+            {firebaseError ? (
+              <p style={{ color: '#E11D48', fontWeight: 'bold' }}>⚠️ Firebase Error: {firebaseError}</p>
+            ) : bookingWindow.isOpen ? (
               <p>🟢 현재 예약 가능 (종료: {bookingWindow.end.toLocaleDateString()} {bookingWindow.end.getHours()}:00)</p>
             ) : (
-              <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 12:00 PM)</p>
+              <p>🔴 예약 준비 중 (오픈: {bookingWindow.nextOpening.toLocaleDateString()} 11:58 AM)</p>
             )}
             <div style={{ display: 'flex', gap: '10px' }}>
               <button className="weekly-btn" onClick={() => setShowWeekly(true)}>📅 전체 일정 확인</button>

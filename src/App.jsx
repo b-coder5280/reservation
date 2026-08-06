@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react'
 import './index.css'
 import { db } from './firebase'
-import { ref, onValue, set } from "firebase/database"
+import { ref, onValue } from "firebase/database"
 
 const TIMES = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'];
 const DAYS_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'];
@@ -107,7 +107,7 @@ function App() {
       reservableStart: validStart,
       reservableEnd: end
     };
-  }, [now]);
+  }, [now, hasEarlyAccess]);
 
   // Sync with Firebase Realtime Database
   useEffect(() => {
@@ -192,7 +192,7 @@ function App() {
     setError('');
   };
 
-  const handleCreateReservation = () => {
+  const handleCreateReservation = async () => {
     if (!userName.trim() || !password.trim()) {
       setError('이름과 비밀번호를 모두 입력해주세요.');
       return;
@@ -237,39 +237,71 @@ function App() {
       }
     }
 
-    const newReservations = {
-      ...reservations,
-      [selectedDate]: {
-        ...reservations[selectedDate],
-        [activeSlot]: { name: userName, password: password }
-      }
-    };
-
-    set(ref(db, 'reservations'), newReservations)
-      .then(() => closeModal())
-      .catch((err) => {
-        console.error(err);
-        setError('예약 저장 중 오류가 발생했습니다.');
+    try {
+      const response = await fetch('/api/create-reservation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          time: activeSlot,
+          name: userName,
+          password,
+          hasEarlyAccess,
+        }),
       });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (result.error === 'SLOT_TAKEN') {
+          setModalMode('taken');
+          return;
+        }
+        if (result.error === 'OVER_LIMIT') {
+          setModalMode('over-limit');
+          return;
+        }
+        throw new Error(result.error || 'Reservation request failed.');
+      }
+
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      setError('예약 저장 중 오류가 발생했습니다.');
+    }
   };
 
-  const handleCancelReservation = () => {
+  const handleCancelReservation = async () => {
     const reservedInfo = reservations[selectedDate]?.[activeSlot];
-    if (reservedInfo && reservedInfo.password === password) {
-      const updatedDateInfo = { ...reservations[selectedDate] };
-      delete updatedDateInfo[activeSlot];
-
-      const newRes = { ...reservations, [selectedDate]: updatedDateInfo };
-      if (Object.keys(updatedDateInfo).length === 0) delete newRes[selectedDate];
-
-      set(ref(db, 'reservations'), newRes)
-        .then(() => closeModal())
-        .catch((err) => {
-          console.error(err);
-          setError('취소 중 오류가 발생했습니다.');
-        });
-    } else {
+    if (!reservedInfo || reservedInfo.password !== password) {
       setError('비밀번호가 일치하지 않습니다.');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/cancel-reservation', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          date: selectedDate,
+          time: activeSlot,
+          password,
+          hasEarlyAccess,
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (result.error === 'PASSWORD_MISMATCH') {
+          setError('비밀번호가 일치하지 않습니다.');
+          return;
+        }
+        throw new Error(result.error || 'Cancellation request failed.');
+      }
+
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      setError('취소 중 오류가 발생했습니다.');
     }
   };
 

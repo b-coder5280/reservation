@@ -1,5 +1,6 @@
-import { getAdminDb } from './_lib/firebaseAdmin.js';
+import crypto from 'node:crypto';
 import { Buffer } from 'node:buffer';
+import { getAdminDb } from './_lib/firebaseAdmin.js';
 import { createReservationEvent, deleteReservationEvent } from './_lib/googleCalendar.js';
 import {
   exceedsWeeklyRestrictedLimit,
@@ -8,6 +9,14 @@ import {
   isSlotReservable,
   validateReservationInput,
 } from './_lib/reservationRules.js';
+import {
+  canRecoverCalendarBackedStaleReservation,
+  claimSlotForCreate,
+  makeCreatingReservation,
+  persistCalendarSync,
+  removeReservationById,
+  replaceStaleReservation,
+} from './_lib/reservationState.js';
 
 function send(res, status, body) {
   res.status(status).json(body);
@@ -23,20 +32,45 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
-async function rollbackCreatedReservation(slotRef, reservation) {
-  const result = await slotRef.transaction((current) => {
-    if (
-      current &&
-      current.name === reservation.name &&
-      current.password === reservation.password &&
-      !current.calendarEventId
-    ) {
-      return null;
-    }
-    return undefined;
-  }, undefined, false);
+async function removeReservationIfStillMatching(slotRef, reservationId) {
+  const result = await slotRef.transaction((current) => removeReservationById(current, reservationId), undefined, false);
+  if (result.committed) return true;
 
-  return result.committed;
+  const snapshot = await slotRef.get();
+  const current = snapshot.val();
+  return !current || current.reservationId !== reservationId;
+}
+
+async function claimSlot(slotRef, reservation, nowMs) {
+  const result = await slotRef.transaction((current) => claimSlotForCreate(current, reservation, nowMs), undefined, false);
+  if (result.committed) return { claimed: true };
+
+  const snapshot = await slotRef.get();
+  const current = snapshot.val();
+  return { claimed: false, current };
+}
+
+async function recoverStaleCalendarBackedSlot(slotRef, current, replacement, nowMs, date, time) {
+  try {
+    await deleteReservationEvent(current.calendarEventId);
+    console.log('[reservation:create] stale calendar deleted', { date, time, reservationId: current.reservationId });
+  } catch (error) {
+    console.error('[reservation:create] stale calendar delete failed', {
+      date,
+      time,
+      reservationId: current.reservationId,
+      error: error?.message,
+    });
+    return { claimed: false, error: 'STALE_CALENDAR_DELETE_FAILED' };
+  }
+
+  const replaceResult = await slotRef.transaction(
+    (latest) => replaceStaleReservation(latest, current, replacement, nowMs),
+    undefined,
+    false,
+  );
+
+  return { claimed: replaceResult.committed };
 }
 
 export default async function handler(req, res) {
@@ -49,38 +83,46 @@ export default async function handler(req, res) {
   try {
     body = await readJson(req);
   } catch {
-    return send(res, 400, { error: 'Invalid JSON body.' });
+    return send(res, 400, { error: 'INVALID_JSON' });
   }
 
   const hasEarlyAccess = body.hasEarlyAccess === true;
   const validation = validateReservationInput(body);
   if (!validation.isValid) {
-    return send(res, 400, { error: 'Invalid reservation request.', fields: validation.errors });
+    return send(res, 400, { error: 'INVALID_REQUEST', fields: validation.errors });
   }
 
   const { date, time, name, password } = validation.values;
   if (!isSlotReservable(date, time, hasEarlyAccess)) {
-    return send(res, 403, { error: 'This slot is not currently reservable.' });
+    return send(res, 403, { error: 'SLOT_NOT_RESERVABLE' });
   }
 
   const db = getAdminDb();
   const slotRef = db.ref(`reservations/${date}/${time}`);
-  const reservation = { name, password };
+  const nowMs = Date.now();
+  const reservationId = crypto.randomUUID();
+  const reservation = makeCreatingReservation({ name, password, reservationId, nowMs });
 
-  let transactionResult;
+  let claimResult;
   try {
-    transactionResult = await slotRef.transaction((current) => {
-      if (current === null) return reservation;
-      return undefined;
-    }, undefined, false);
+    claimResult = await claimSlot(slotRef, reservation, nowMs);
+
+    if (!claimResult.claimed && canRecoverCalendarBackedStaleReservation(claimResult.current, nowMs)) {
+      claimResult = await recoverStaleCalendarBackedSlot(slotRef, claimResult.current, reservation, nowMs, date, time);
+      if (claimResult.error) {
+        return send(res, 502, { error: claimResult.error });
+      }
+    }
   } catch (error) {
-    console.error('Firebase reservation transaction failed:', error);
-    return send(res, 500, { error: '예약 저장 중 오류가 발생했습니다.' });
+    console.error('[reservation:create] slot claim failed', { date, time, reservationId, error: error?.message });
+    return send(res, 500, { error: 'FIREBASE_TRANSACTION_FAILED' });
   }
 
-  if (!transactionResult.committed) {
+  if (!claimResult.claimed) {
     return send(res, 409, { error: 'SLOT_TAKEN' });
   }
+
+  console.log('[reservation:create] slot claimed', { date, time, reservationId });
 
   try {
     if (isRestrictedSlot(date, time)) {
@@ -89,50 +131,99 @@ export default async function handler(req, res) {
       const reservations = reservationsSnapshot.val() || {};
 
       if (exceedsWeeklyRestrictedLimit({ reservations, bookingWindow, name })) {
-        const rolledBack = await rollbackCreatedReservation(slotRef, reservation);
+        const rolledBack = await removeReservationIfStillMatching(slotRef, reservationId);
         if (!rolledBack) {
-          return send(res, 500, { error: 'Over-limit reservation rollback needs manual review.' });
+          console.error('[reservation:create] over-limit rollback failed', { date, time, reservationId });
+          return send(res, 500, { error: 'CREATE_RECOVERY_REQUIRED' });
         }
+        console.log('[reservation:create] over-limit rollback complete', { date, time, reservationId });
         return send(res, 409, { error: 'OVER_LIMIT' });
       }
     }
 
-    const calendarEventId = await createReservationEvent({ date, time, name });
+    let calendarEventId;
+    try {
+      calendarEventId = await createReservationEvent({ date, time, name });
+    } catch (error) {
+      console.error('[reservation:create] calendar create failed', { date, time, reservationId, error: error?.message });
 
-    const updateResult = await slotRef.transaction((current) => {
-      if (
-        current &&
-        current.name === name &&
-        current.password === password &&
-        !current.calendarEventId
-      ) {
-        return { ...current, calendarEventId };
+      const firebaseClean = await removeReservationIfStillMatching(slotRef, reservationId);
+      if (!firebaseClean) {
+        return send(res, 502, { error: 'CREATE_RECOVERY_REQUIRED' });
       }
-      return undefined;
-    }, undefined, false);
+
+      return send(res, 502, { error: 'CALENDAR_CREATE_FAILED' });
+    }
+
+    console.log('[reservation:create] calendar created', { date, time, reservationId, calendarEventId });
+
+    let updateResult;
+    try {
+      const syncNowMs = Date.now();
+      updateResult = await slotRef.transaction(
+        (current) => persistCalendarSync(current, reservationId, calendarEventId, syncNowMs),
+        undefined,
+        false,
+      );
+    } catch (error) {
+      console.error('[reservation:create] sync persist transaction failed', {
+        date,
+        time,
+        reservationId,
+        calendarEventId,
+        error: error?.message,
+      });
+      updateResult = { committed: false };
+    }
 
     if (!updateResult.committed) {
-      await deleteReservationEvent(calendarEventId);
-      return send(res, 409, { error: 'Reservation changed before Calendar sync completed.' });
+      let calendarDeleted = false;
+      let firebaseClean = false;
+
+      try {
+        await deleteReservationEvent(calendarEventId);
+        calendarDeleted = true;
+      } catch (deleteError) {
+        console.error('[reservation:create] calendar cleanup failed after persist failure', {
+          date,
+          time,
+          reservationId,
+          calendarEventId,
+          error: deleteError?.message,
+        });
+      }
+
+      try {
+        firebaseClean = await removeReservationIfStillMatching(slotRef, reservationId);
+      } catch (rollbackError) {
+        console.error('[reservation:create] firebase cleanup failed after persist failure', {
+          date,
+          time,
+          reservationId,
+          calendarEventId,
+          error: rollbackError?.message,
+        });
+      }
+
+      if (!calendarDeleted || !firebaseClean) {
+        return send(res, 502, { error: 'CREATE_RECOVERY_REQUIRED' });
+      }
+
+      return send(res, 409, { error: 'SYNC_PERSIST_CONFLICT' });
     }
+
+    console.log('[reservation:create] sync persisted', { date, time, reservationId, calendarEventId });
 
     return send(res, 201, {
       reservation: {
         name,
+        reservationId,
         calendarEventId,
+        calendarSyncStatus: 'synced',
       },
     });
   } catch (error) {
-    console.error('Reservation creation sync failed:', error);
-    let rolledBack = false;
-    try {
-      rolledBack = await rollbackCreatedReservation(slotRef, reservation);
-    } catch (rollbackError) {
-      console.error('Firebase rollback after Calendar failure failed:', rollbackError);
-    }
-    if (!rolledBack) {
-      return send(res, 502, { error: 'Google Calendar synchronization failed, and Firebase rollback needs manual review.' });
-    }
-    return send(res, 502, { error: 'Google Calendar synchronization failed. Reservation was not saved.' });
+    console.error('[reservation:create] unexpected create failure', { date, time, reservationId, error: error?.message });
+    return send(res, 500, { error: 'CREATE_RECOVERY_REQUIRED' });
   }
 }

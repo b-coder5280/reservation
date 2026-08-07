@@ -260,6 +260,14 @@ function App() {
           setModalMode('over-limit');
           return;
         }
+        if (result.error === 'CALENDAR_CREATE_FAILED') {
+          setError('캘린더 동기화 중 오류가 발생했습니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+        if (result.error === 'CREATE_RECOVERY_REQUIRED' || result.error === 'STALE_CALENDAR_DELETE_FAILED') {
+          setError('예약 동기화 복구가 필요합니다. 관리자에게 문의해주세요.');
+          return;
+        }
         throw new Error(result.error || 'Reservation request failed.');
       }
 
@@ -293,6 +301,18 @@ function App() {
       if (!response.ok) {
         if (result.error === 'PASSWORD_MISMATCH') {
           setError('비밀번호가 일치하지 않습니다.');
+          return;
+        }
+        if (result.error === 'SYNC_IN_PROGRESS') {
+          setError('예약 동기화가 진행 중입니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+        if (result.error === 'CALENDAR_DELETE_FAILED') {
+          setError('캘린더 동기화 문제로 취소하지 못했습니다. 잠시 후 다시 시도해주세요.');
+          return;
+        }
+        if (result.error === 'CANCEL_RECOVERY_REQUIRED') {
+          setError('취소 동기화 복구가 필요합니다. 관리자에게 문의해주세요.');
           return;
         }
         throw new Error(result.error || 'Cancellation request failed.');

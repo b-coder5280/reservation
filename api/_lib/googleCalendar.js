@@ -42,23 +42,32 @@ function addHours(dateStr, time, hoursToAdd) {
   return { date: endDate, time: endTime };
 }
 
+export function getReservationEventTimes({ date, time }) {
+  const end = addHours(date, time, 3);
+
+  return {
+    start: {
+      dateTime: `${date}T${time}:00`,
+      timeZone: TIME_ZONE,
+    },
+    end: {
+      dateTime: `${end.date}T${end.time}:00`,
+      timeZone: TIME_ZONE,
+    },
+  };
+}
+
 export async function createReservationEvent({ date, time, name }) {
   const calendar = getCalendarClient();
   const calendarId = requireEnv('GOOGLE_CALENDAR_ID');
-  const end = addHours(date, time, 3);
+  const eventTimes = getReservationEventTimes({ date, time });
 
   const response = await calendar.events.insert({
     calendarId,
     requestBody: {
       summary: `[실험 예약] ${name}`,
-      start: {
-        dateTime: `${date}T${time}:00`,
-        timeZone: TIME_ZONE,
-      },
-      end: {
-        dateTime: `${end.date}T${end.time}:00`,
-        timeZone: TIME_ZONE,
-      },
+      start: eventTimes.start,
+      end: eventTimes.end,
     },
   });
 

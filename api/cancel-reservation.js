@@ -3,6 +3,12 @@ import { Buffer } from 'node:buffer';
 import { getAdminDb } from './_lib/firebaseAdmin.js';
 import { deleteReservationEvent } from './_lib/googleCalendar.js';
 import { isSlotReservable, validateCancellationInput } from './_lib/reservationRules.js';
+import {
+  claimCancellation,
+  normalizeReservationForCancellation,
+  removeReservationById,
+  restoreSyncedCancellation,
+} from './_lib/reservationState.js';
 
 function send(res, status, body) {
   res.status(status).json(body);
@@ -18,15 +24,41 @@ async function readJson(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}');
 }
 
-async function clearCancelLock(slotRef, cancelToken) {
-  await slotRef.transaction((current) => {
-    if (current?.canceling === cancelToken) {
-      const rest = { ...current };
-      delete rest.canceling;
-      return rest;
-    }
-    return undefined;
-  }, undefined, false);
+async function removeReservationIfStillMatching(slotRef, reservationId) {
+  const result = await slotRef.transaction((current) => removeReservationById(current, reservationId), undefined, false);
+  if (result.committed) return true;
+
+  const snapshot = await slotRef.get();
+  const current = snapshot.val();
+  return !current || current.reservationId !== reservationId;
+}
+
+async function normalizeForCancellation(slotRef, password, reservationId, nowMs) {
+  const result = await slotRef.transaction(
+    (current) => normalizeReservationForCancellation(current, { password, reservationId, nowMs }),
+    undefined,
+    false,
+  );
+
+  if (result.committed) {
+    return result.snapshot.val();
+  }
+
+  return null;
+}
+
+async function restoreSyncedIfStillMatching(slotRef, reservationId) {
+  const result = await slotRef.transaction(
+    (current) => restoreSyncedCancellation(current, reservationId, Date.now()),
+    undefined,
+    false,
+  );
+
+  if (result.committed) return true;
+
+  const snapshot = await slotRef.get();
+  const current = snapshot.val();
+  return !current || current.reservationId !== reservationId;
 }
 
 export default async function handler(req, res) {
@@ -39,70 +71,99 @@ export default async function handler(req, res) {
   try {
     body = await readJson(req);
   } catch {
-    return send(res, 400, { error: 'Invalid JSON body.' });
+    return send(res, 400, { error: 'INVALID_JSON' });
   }
 
   const hasEarlyAccess = body.hasEarlyAccess === true;
   const validation = validateCancellationInput(body);
   if (!validation.isValid) {
-    return send(res, 400, { error: 'Invalid cancellation request.', fields: validation.errors });
+    return send(res, 400, { error: 'INVALID_REQUEST', fields: validation.errors });
   }
 
   const { date, time, password } = validation.values;
   if (!isSlotReservable(date, time, hasEarlyAccess)) {
-    return send(res, 403, { error: 'This slot is not currently cancellable.' });
+    return send(res, 403, { error: 'SLOT_NOT_CANCELLABLE' });
   }
 
   const db = getAdminDb();
   const slotRef = db.ref(`reservations/${date}/${time}`);
-  const snapshot = await slotRef.get();
-  const reservation = snapshot.val();
+  const initialSnapshot = await slotRef.get();
+  const initialReservation = initialSnapshot.val();
 
-  if (!reservation) {
-    return send(res, 404, { error: 'Reservation not found.' });
+  if (!initialReservation) {
+    return send(res, 200, { cancelled: true, alreadyAbsent: true });
   }
 
-  if (reservation.password !== password) {
+  if (initialReservation.password !== password) {
     return send(res, 403, { error: 'PASSWORD_MISMATCH' });
   }
 
-  const cancelToken = crypto.randomUUID();
-  const lockResult = await slotRef.transaction((current) => {
-    if (
-      current &&
-      current.password === password &&
-      current.calendarEventId === reservation.calendarEventId &&
-      !current.canceling
-    ) {
-      return { ...current, canceling: cancelToken };
-    }
-    return undefined;
-  }, undefined, false);
+  let reservationId = initialReservation.reservationId || crypto.randomUUID();
+  const nowMs = Date.now();
+  const normalizedReservation = await normalizeForCancellation(slotRef, password, reservationId, nowMs);
 
-  if (!lockResult.committed) {
-    return send(res, 409, { error: 'Reservation changed before cancellation could start.' });
+  if (!normalizedReservation) {
+    const snapshot = await slotRef.get();
+    const current = snapshot.val();
+    if (!current) return send(res, 200, { cancelled: true, alreadyAbsent: true });
+    if (current.password !== password) return send(res, 403, { error: 'PASSWORD_MISMATCH' });
+    return send(res, 409, { error: 'CANCELLATION_CONFLICT' });
+  }
+  reservationId = normalizedReservation.reservationId;
+
+  const claimResult = await slotRef.transaction(
+    (current) => claimCancellation(current, { password, reservationId, nowMs: Date.now() }),
+    undefined,
+    false,
+  );
+
+  if (!claimResult.committed) {
+    const snapshot = await slotRef.get();
+    const current = snapshot.val();
+    if (!current || current.reservationId !== reservationId) {
+      return send(res, 200, { cancelled: true, alreadyAbsent: true });
+    }
+    return send(res, 409, { error: 'SYNC_IN_PROGRESS' });
   }
 
-  try {
-    await deleteReservationEvent(reservation.calendarEventId);
-  } catch (error) {
-    console.error('Google Calendar deletion failed:', error);
+  const claimedReservation = claimResult.snapshot.val();
+  console.log('[reservation:cancel] cancellation claimed', { date, time, reservationId });
+
+  if (claimedReservation.calendarEventId) {
     try {
-      await clearCancelLock(slotRef, cancelToken);
-    } catch (rollbackError) {
-      console.error('Cancellation lock rollback failed:', rollbackError);
+      const deletion = await deleteReservationEvent(claimedReservation.calendarEventId);
+      console.log('[reservation:cancel] calendar deleted/already absent', {
+        date,
+        time,
+        reservationId,
+        calendarEventId: claimedReservation.calendarEventId,
+        alreadyAbsent: deletion.missing,
+      });
+    } catch (error) {
+      console.error('[reservation:cancel] calendar delete failed', {
+        date,
+        time,
+        reservationId,
+        calendarEventId: claimedReservation.calendarEventId,
+        error: error?.message,
+      });
+
+      const restored = await restoreSyncedIfStillMatching(slotRef, reservationId);
+      if (!restored) {
+        return send(res, 502, { error: 'CANCEL_RECOVERY_REQUIRED' });
+      }
+      return send(res, 502, { error: 'CALENDAR_DELETE_FAILED' });
     }
-    return send(res, 502, { error: 'Google Calendar cancellation failed. Reservation was not removed.' });
+  } else {
+    console.log('[reservation:cancel] no calendar event to delete', { date, time, reservationId });
   }
 
-  const removeResult = await slotRef.transaction((current) => {
-    if (current?.canceling === cancelToken) return null;
-    return undefined;
-  }, undefined, false);
-
-  if (!removeResult.committed) {
-    return send(res, 409, { error: 'Calendar event was removed, but Firebase reservation removal needs manual review.' });
+  const firebaseRemoved = await removeReservationIfStillMatching(slotRef, reservationId);
+  if (!firebaseRemoved) {
+    console.error('[reservation:cancel] firebase remove failed', { date, time, reservationId });
+    return send(res, 502, { error: 'CANCEL_RECOVERY_REQUIRED' });
   }
 
+  console.log('[reservation:cancel] firebase removed', { date, time, reservationId });
   return send(res, 200, { cancelled: true });
 }

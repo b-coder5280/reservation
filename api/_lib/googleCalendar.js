@@ -1,13 +1,8 @@
 import { google } from 'googleapis';
-import {
-  DISTINCT_COLORS,
-  getReservationColorIndex,
-} from '../../src/shared/nameColors.js';
+import { getCalendarColorIdForName } from './calendarColorAssignments.js';
 
 const TIME_ZONE = 'Asia/Seoul';
 export const SPELL_RESERVATION_SOURCE = 'spell-reservation';
-
-let calendarEventColorsPromise;
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -72,59 +67,6 @@ export function getReservationKey(date, time) {
   return `${date}_${time}`;
 }
 
-function parseHexColor(hexColor) {
-  const normalized = String(hexColor || '').replace('#', '');
-  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
-
-  return {
-    r: Number.parseInt(normalized.slice(0, 2), 16),
-    g: Number.parseInt(normalized.slice(2, 4), 16),
-    b: Number.parseInt(normalized.slice(4, 6), 16),
-  };
-}
-
-function colorDistance(leftHex, rightHex) {
-  const left = parseHexColor(leftHex);
-  const right = parseHexColor(rightHex);
-  if (!left || !right) return Number.POSITIVE_INFINITY;
-
-  return ((left.r - right.r) ** 2) + ((left.g - right.g) ** 2) + ((left.b - right.b) ** 2);
-}
-
-export function getClosestCalendarColorId(websiteColor, eventColors) {
-  return Object.entries(eventColors || {})
-    .map(([colorId, color]) => ({
-      colorId,
-      distance: colorDistance(websiteColor, color.background),
-    }))
-    .sort((left, right) => {
-      if (left.distance !== right.distance) return left.distance - right.distance;
-      return Number(left.colorId) - Number(right.colorId);
-    })[0]?.colorId || '1';
-}
-
-export function buildWebsiteToCalendarColorMap(eventColors) {
-  return DISTINCT_COLORS.map((websiteColor) => getClosestCalendarColorId(websiteColor, eventColors));
-}
-
-export function getCalendarColorIdForNameFromEventColors(name, eventColors) {
-  const colorMap = buildWebsiteToCalendarColorMap(eventColors);
-  return colorMap[getReservationColorIndex(name)] || '1';
-}
-
-export async function getCalendarEventColors(calendar = getCalendarClient()) {
-  if (!calendarEventColorsPromise) {
-    calendarEventColorsPromise = calendar.colors.get().then((response) => response.data.event || {});
-  }
-
-  return calendarEventColorsPromise;
-}
-
-export async function getCalendarColorIdForName(name, calendar = getCalendarClient()) {
-  const eventColors = await getCalendarEventColors(calendar);
-  return getCalendarColorIdForNameFromEventColors(name, eventColors);
-}
-
 export function buildReservationEventResource({ date, time, name, reservationId, colorId }) {
   const eventTimes = getReservationEventTimes({ date, time });
 
@@ -143,9 +85,17 @@ export function buildReservationEventResource({ date, time, name, reservationId,
   };
 }
 
-export async function createReservationEvent({ date, time, name, reservationId, calendar = getCalendarClient() }) {
+export async function createReservationEvent({
+  date,
+  time,
+  name,
+  reservationId,
+  db,
+  assignmentsRef,
+  calendar = getCalendarClient(),
+}) {
   const calendarId = getCalendarId();
-  const colorId = await getCalendarColorIdForName(name, calendar);
+  const colorId = await getCalendarColorIdForName({ db, assignmentsRef, name });
   const requestBody = buildReservationEventResource({ date, time, name, reservationId, colorId });
 
   const response = await calendar.events.insert({

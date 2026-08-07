@@ -1,14 +1,13 @@
 import crypto from 'node:crypto';
 import {
   buildReservationEventResource,
-  getCalendarColorIdForName,
   getCalendarId,
-  getCalendarEventColors,
   getReservationKey,
   getReservationEventTimes,
   SPELL_RESERVATION_SOURCE,
 } from './googleCalendar.js';
-import { CALENDAR_SYNC_STATUS } from './reservationState.js';
+import { getCalendarColorIdForName } from './calendarColorAssignments.js';
+import { CALENDAR_SYNC_STATUS, CALENDAR_SYNC_VERSION } from './reservationState.js';
 import { getWebsiteColorForName } from '../../src/shared/nameColors.js';
 
 const VALID_TIMES = new Set(['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']);
@@ -69,6 +68,14 @@ export function getBackfillAction({ reservation, existingEvent, desiredEvent }) 
   return 'ALREADY_SYNCED';
 }
 
+export function isCurrentCalendarSync(reservation) {
+  return Boolean(
+    reservation?.calendarSyncStatus === CALENDAR_SYNC_STATUS.SYNCED &&
+    reservation.calendarEventId &&
+    reservation.calendarSyncVersion === CALENDAR_SYNC_VERSION
+  );
+}
+
 export async function findExistingReservationEvent({ calendar, calendarId, date, time, calendarEventId }) {
   if (calendarEventId) {
     try {
@@ -96,13 +103,14 @@ export async function findExistingReservationEvent({ calendar, calendarId, date,
 export async function upsertBackfillCalendarEvent({
   calendar,
   calendarId,
+  assignmentsRef,
   date,
   time,
   reservation,
   reservationId,
   dryRun = false,
 }) {
-  const colorId = await getCalendarColorIdForName(reservation.name, calendar);
+  const colorId = await getCalendarColorIdForName({ assignmentsRef, name: reservation.name, dryRun });
   const desiredEvent = buildReservationEventResource({
     date,
     time,
@@ -188,6 +196,7 @@ export async function persistBackfillSync(slotRef, reservationId, calendarEventI
       ...current,
       calendarEventId,
       calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+      calendarSyncVersion: CALENDAR_SYNC_VERSION,
       createdAt: current.createdAt || nowMs,
       syncUpdatedAt: nowMs,
     };
@@ -199,6 +208,7 @@ export async function persistBackfillSync(slotRef, reservationId, calendarEventI
 export async function processBackfillReservation({
   calendar,
   calendarId,
+  assignmentsRef,
   slotRef,
   date,
   time,
@@ -213,6 +223,17 @@ export async function processBackfillReservation({
       date,
       time,
       name: reservation?.name || '',
+      websiteColor,
+      calendarColorId: '',
+      action: 'SKIP',
+    };
+  }
+
+  if (isCurrentCalendarSync(reservation)) {
+    return {
+      date,
+      time,
+      name: reservation.name,
       websiteColor,
       calendarColorId: '',
       action: 'SKIP',
@@ -239,6 +260,7 @@ export async function processBackfillReservation({
   const eventResult = await upsertBackfillCalendarEvent({
     calendar,
     calendarId,
+    assignmentsRef,
     date,
     time,
     reservation: activeReservation,
@@ -273,9 +295,26 @@ export async function processBackfillReservation({
   };
 }
 
+async function processWithConcurrency(rows, concurrency, worker) {
+  const results = new Array(rows.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (nextIndex < rows.length) {
+      const index = nextIndex;
+      nextIndex += 1;
+      results[index] = await worker(rows[index]);
+    }
+  }
+
+  const workerCount = Math.min(concurrency, rows.length);
+  await Promise.all(Array.from({ length: workerCount }, () => runWorker()));
+  return results;
+}
+
 export async function runCalendarBackfill({ db, calendar, dryRun = false, now = new Date(), logger = console }) {
   const calendarId = getCalendarId();
-  await getCalendarEventColors(calendar);
+  const assignmentsRef = db.ref('calendarColorAssignments');
 
   const snapshot = await db.ref('reservations').get();
   const rows = flattenReservations(snapshot.val() || {});
@@ -291,14 +330,35 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
     failed: 0,
   };
 
+  const rowsToProcess = [];
+
   for (const row of rows) {
     if (isEligibleBackfillSlot(row.date, row.time, now)) summary.eligible += 1;
 
+    if (!row.reservation?.name || !isEligibleBackfillSlot(row.date, row.time, now) || isCurrentCalendarSync(row.reservation)) {
+      const skipped = {
+        date: row.date,
+        time: row.time,
+        name: row.reservation?.name || '',
+        websiteColor: getWebsiteColorForName(row.reservation?.name),
+        calendarColorId: '',
+        action: 'SKIP',
+      };
+      summary.skipped += 1;
+      results.push(skipped);
+      logger.log(`${skipped.date} | ${skipped.time} | ${skipped.name} | ${skipped.websiteColor} | ${skipped.calendarColorId} | ${skipped.action}`);
+    } else {
+      rowsToProcess.push(row);
+    }
+  }
+
+  const processedResults = await processWithConcurrency(rowsToProcess, 4, async (row) => {
     try {
       const slotRef = db.ref(`reservations/${row.date}/${row.time}`);
-      const result = await processBackfillReservation({
+      return await processBackfillReservation({
         calendar,
         calendarId,
+        assignmentsRef,
         slotRef,
         date: row.date,
         time: row.time,
@@ -306,18 +366,8 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
         dryRun,
         now,
       });
-
-      if (result.action === 'CREATE') summary.created += 1;
-      if (result.action === 'UPDATE') summary.updated += 1;
-      if (result.action === 'RECOVER') summary.recovered += 1;
-      if (result.action === 'ALREADY_SYNCED') summary.alreadySynced += 1;
-      if (result.action === 'SKIP') summary.skipped += 1;
-      if (result.error) summary.failed += 1;
-      results.push(result);
-      logger.log(`${result.date} | ${result.time} | ${result.name} | ${result.websiteColor} | ${result.calendarColorId} | ${result.action}${result.error ? ` | ${result.error}` : ''}`);
     } catch (error) {
-      summary.failed += 1;
-      const failed = {
+      return {
         date: row.date,
         time: row.time,
         name: row.reservation?.name || '',
@@ -326,10 +376,22 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
         action: 'SKIP',
         error: error?.message || 'Unknown error',
       };
-      results.push(failed);
-      logger.error(`${failed.date} | ${failed.time} | ${failed.name} | ${failed.websiteColor} | ${failed.calendarColorId} | FAILED | ${failed.error}`);
     }
-  }
+  });
+
+  processedResults.forEach((result) => {
+    if (result.action === 'CREATE') summary.created += 1;
+    if (result.action === 'UPDATE') summary.updated += 1;
+    if (result.action === 'RECOVER') summary.recovered += 1;
+    if (result.action === 'ALREADY_SYNCED') summary.alreadySynced += 1;
+    if (result.action === 'SKIP') summary.skipped += 1;
+    if (result.error) summary.failed += 1;
+    results.push(result);
+
+    const line = `${result.date} | ${result.time} | ${result.name} | ${result.websiteColor} | ${result.calendarColorId} | ${result.error ? 'FAILED' : result.action}${result.error ? ` | ${result.error}` : ''}`;
+    if (result.error) logger.error(line);
+    else logger.log(line);
+  });
 
   return { results, summary };
 }

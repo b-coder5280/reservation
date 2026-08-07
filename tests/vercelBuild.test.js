@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   printReconciliationSummary,
+  runProductionCalendarReconciliation,
   runVercelBuild,
   shouldRunCalendarReconciliation,
 } from '../scripts/vercelBuild.js';
@@ -56,6 +57,72 @@ test('VERCEL_ENV=production executes backfill after normal build', async () => {
   });
 
   assert.deepEqual(calls, ['build', 'reconcile']);
+});
+
+test('VERCEL_ENV=production logs completion after reconciliation', async () => {
+  const logger = createLogger();
+
+  await runVercelBuild({
+    env: { VERCEL_ENV: 'production' },
+    logger,
+    runNormalBuild: async () => {},
+    runReconciliation: async () => {},
+  });
+
+  assert.ok(logger.messages.includes('Production build complete.'));
+});
+
+test('production reconciliation closes Firebase Admin resources after success', async () => {
+  let closed = false;
+  const logger = createLogger();
+
+  await runProductionCalendarReconciliation({
+    logger,
+    loadResources: async () => ({
+      getAdminDb: () => ({ ref: () => ({}) }),
+      closeAdminApps: async () => { closed = true; },
+      getCalendarClient: () => ({}),
+      runCalendarBackfill: async () => ({
+        summary: {
+          scanned: 0,
+          eligible: 0,
+          created: 0,
+          updated: 0,
+          recovered: 0,
+          alreadySynced: 0,
+          skipped: 0,
+          failed: 0,
+        },
+        results: [],
+      }),
+    }),
+  });
+
+  assert.equal(closed, true);
+  assert.ok(logger.messages.includes('Calendar reconciliation resources closed.'));
+});
+
+test('production reconciliation closes Firebase Admin resources when backfill throws', async () => {
+  let closed = false;
+  const logger = createLogger();
+
+  await assert.rejects(
+    runProductionCalendarReconciliation({
+      logger,
+      loadResources: async () => ({
+        getAdminDb: () => ({ ref: () => ({}) }),
+        closeAdminApps: async () => { closed = true; },
+        getCalendarClient: () => ({}),
+        runCalendarBackfill: async () => {
+          throw new Error('boom');
+        },
+      }),
+    }),
+    /boom/,
+  );
+
+  assert.equal(closed, true);
+  assert.ok(logger.messages.includes('Calendar reconciliation resources closed.'));
 });
 
 test('production reconciliation predicate is exact', () => {

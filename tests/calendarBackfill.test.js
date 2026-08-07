@@ -5,6 +5,7 @@ import {
   eventNeedsUpdate,
   getBackfillAction,
   processBackfillReservation,
+  runCalendarBackfill,
 } from '../api/_lib/calendarBackfill.js';
 import {
   SPELL_RESERVATION_SOURCE,
@@ -13,25 +14,14 @@ import {
   getReservationKey,
 } from '../api/_lib/googleCalendar.js';
 import {
+  CALENDAR_SYNC_VERSION,
   CALENDAR_SYNC_STATUS,
   claimCancellation,
   removeReservationById,
 } from '../api/_lib/reservationState.js';
+import { CALENDAR_COLOR_PALETTE } from '../api/_lib/calendarColorAssignments.js';
 
 const NOW = new Date('2026-08-07T00:00:00+09:00');
-const EVENT_COLORS = {
-  1: { background: '#a4bdfc' },
-  2: { background: '#7ae7bf' },
-  3: { background: '#dbadff' },
-  4: { background: '#ff887c' },
-  5: { background: '#fbd75b' },
-  6: { background: '#ffb878' },
-  7: { background: '#46d6db' },
-  8: { background: '#e1e1e1' },
-  9: { background: '#5484ed' },
-  10: { background: '#51b749' },
-  11: { background: '#dc2127' },
-};
 
 class FakeSlotRef {
   constructor(value) {
@@ -54,17 +44,46 @@ class FakeSlotRef {
   }
 }
 
+class FakeAssignmentsRef {
+  constructor(value = null) {
+    this.value = value;
+    this.getCount = 0;
+    this.transactionCount = 0;
+  }
+
+  async get() {
+    this.getCount += 1;
+    return { val: () => this.value };
+  }
+
+  async transaction(callback) {
+    this.transactionCount += 1;
+    const initial = callback(null);
+    if (initial === undefined) {
+      return { committed: false, snapshot: { val: () => this.value } };
+    }
+
+    const next = callback(this.value);
+    if (next === undefined) {
+      return { committed: false, snapshot: { val: () => this.value } };
+    }
+
+    this.value = next;
+    return { committed: true, snapshot: { val: () => this.value } };
+  }
+}
+
 class FakeCalendar {
   constructor(events = []) {
     this.eventsById = new Map(events.map((event) => [event.id, { ...event }]));
     this.insertCount = 0;
     this.patchCount = 0;
+    this.getCount = 0;
+    this.listCount = 0;
     this.nextId = 1;
-    this.colors = {
-      get: async () => ({ data: { event: EVENT_COLORS } }),
-    };
     this.events = {
       get: async ({ eventId }) => {
+        this.getCount += 1;
         const event = this.eventsById.get(eventId);
         if (!event) {
           const error = new Error('not found');
@@ -74,6 +93,7 @@ class FakeCalendar {
         return { data: { ...event } };
       },
       list: async ({ privateExtendedProperty = [] }) => {
+        this.listCount += 1;
         const predicates = privateExtendedProperty.map((property) => property.split('='));
         const items = Array.from(this.eventsById.values()).filter((event) => {
           const privateProperties = event.extendedProperties?.private || {};
@@ -100,6 +120,28 @@ class FakeCalendar {
   }
 }
 
+function createBackfillContext(events = []) {
+  return {
+    calendar: new FakeCalendar(events),
+    assignmentsRef: new FakeAssignmentsRef(),
+  };
+}
+
+class FakeDb {
+  constructor(reservations) {
+    this.reservations = reservations;
+    this.assignmentsRef = new FakeAssignmentsRef();
+  }
+
+  ref(path) {
+    if (path === 'reservations') {
+      return { get: async () => ({ val: () => this.reservations }) };
+    }
+    if (path === 'calendarColorAssignments') return this.assignmentsRef;
+    throw new Error(`Unexpected ref path: ${path}`);
+  }
+}
+
 function existingEvent({ id = 'existing-1', date = '2026-08-08', time = '09:00', name = 'Tester', reservationId = 'rid-1', colorId = '1' } = {}) {
   return {
     id,
@@ -110,10 +152,11 @@ function existingEvent({ id = 'existing-1', date = '2026-08-08', time = '09:00',
 
 test('legacy reservation backfill creates Calendar event and persists Firebase sync', async () => {
   const slotRef = new FakeSlotRef({ name: 'Tester', password: 'pw' });
-  const calendar = new FakeCalendar();
+  const { calendar, assignmentsRef } = createBackfillContext();
   const result = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -124,13 +167,14 @@ test('legacy reservation backfill creates Calendar event and persists Firebase s
   assert.equal(result.action, 'CREATE');
   assert.equal(calendar.insertCount, 1);
   assert.equal(slotRef.value.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
+  assert.equal(slotRef.value.calendarSyncVersion, CALENDAR_SYNC_VERSION);
   assert.ok(slotRef.value.reservationId);
   assert.ok(slotRef.value.calendarEventId);
 });
 
 test('already synced reservation remains idempotent and creates no duplicate', async () => {
   const event = existingEvent({ colorId: '1' });
-  const calendar = new FakeCalendar([event]);
+  const { calendar, assignmentsRef } = createBackfillContext([event]);
   const slotRef = new FakeSlotRef({
     name: 'Tester',
     password: 'pw',
@@ -142,6 +186,7 @@ test('already synced reservation remains idempotent and creates no duplicate', a
   const first = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -151,6 +196,7 @@ test('already synced reservation remains idempotent and creates no duplicate', a
   const second = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -159,17 +205,18 @@ test('already synced reservation remains idempotent and creates no duplicate', a
   });
 
   assert.equal(first.action, 'UPDATE');
-  assert.equal(second.action, 'ALREADY_SYNCED');
+  assert.equal(second.action, 'SKIP');
   assert.equal(calendar.insertCount, 0);
 });
 
 test('second production deployment produces zero duplicate Calendar events', async () => {
-  const calendar = new FakeCalendar();
+  const { calendar, assignmentsRef } = createBackfillContext();
   const slotRef = new FakeSlotRef({ name: 'Tester', password: 'pw' });
 
   await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -177,9 +224,11 @@ test('second production deployment produces zero duplicate Calendar events', asy
     now: NOW,
   });
 
+  const callsBeforeSecond = calendar.getCount + calendar.listCount + calendar.insertCount + calendar.patchCount;
   const second = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -187,14 +236,87 @@ test('second production deployment produces zero duplicate Calendar events', asy
     now: NOW,
   });
 
-  assert.equal(second.action, 'ALREADY_SYNCED');
+  assert.equal(second.action, 'SKIP');
+  assert.equal(calendar.getCount + calendar.listCount + calendar.insertCount + calendar.patchCount, callsBeforeSecond);
   assert.equal(calendar.insertCount, 1);
   assert.equal(calendar.eventsById.size, 1);
 });
 
+test('calendarSyncVersion 2 reservation skips Google API calls', async () => {
+  const event = existingEvent({ id: 'synced-v2' });
+  const { calendar, assignmentsRef } = createBackfillContext([event]);
+  const slotRef = new FakeSlotRef({
+    name: 'Tester',
+    password: 'pw',
+    reservationId: 'rid-1',
+    calendarEventId: event.id,
+    calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+    calendarSyncVersion: CALENDAR_SYNC_VERSION,
+  });
+
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-08',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(result.action, 'SKIP');
+  assert.equal(calendar.getCount, 0);
+  assert.equal(calendar.listCount, 0);
+  assert.equal(calendar.insertCount, 0);
+  assert.equal(calendar.patchCount, 0);
+  assert.equal(assignmentsRef.transactionCount, 0);
+});
+
+test('production reconciliation filters version 2 reservations before Calendar calls', async () => {
+  const previousCalendarId = process.env.GOOGLE_CALENDAR_ID;
+  process.env.GOOGLE_CALENDAR_ID = 'calendar-id';
+  const calendar = new FakeCalendar([existingEvent({ id: 'synced-v2' })]);
+  const db = new FakeDb({
+    '2026-08-08': {
+      '09:00': {
+        name: 'Tester',
+        password: 'pw',
+        reservationId: 'rid-1',
+        calendarEventId: 'synced-v2',
+        calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+        calendarSyncVersion: CALENDAR_SYNC_VERSION,
+      },
+    },
+  });
+
+  try {
+    const { summary } = await runCalendarBackfill({
+      db,
+      calendar,
+      now: NOW,
+      logger: { log: () => {}, error: () => {} },
+    });
+
+    assert.equal(summary.scanned, 1);
+    assert.equal(summary.skipped, 1);
+    assert.equal(calendar.getCount, 0);
+    assert.equal(calendar.listCount, 0);
+    assert.equal(calendar.insertCount, 0);
+    assert.equal(calendar.patchCount, 0);
+    assert.equal(db.assignmentsRef.transactionCount, 0);
+  } finally {
+    if (previousCalendarId === undefined) {
+      delete process.env.GOOGLE_CALENDAR_ID;
+    } else {
+      process.env.GOOGLE_CALENDAR_ID = previousCalendarId;
+    }
+  }
+});
+
 test('Calendar event exists but Firebase calendarEventId is missing gets recovered', async () => {
   const event = existingEvent({ id: 'recover-1', reservationId: 'rid-1' });
-  const calendar = new FakeCalendar([event]);
+  const { calendar, assignmentsRef } = createBackfillContext([event]);
   const slotRef = new FakeSlotRef({
     name: 'Tester',
     password: 'pw',
@@ -204,6 +326,7 @@ test('Calendar event exists but Firebase calendarEventId is missing gets recover
   const result = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -216,9 +339,9 @@ test('Calendar event exists but Firebase calendarEventId is missing gets recover
   assert.equal(calendar.insertCount, 0);
 });
 
-test('existing Calendar event with wrong color gets updated', async () => {
-  const event = existingEvent({ id: 'wrong-color-1', colorId: '11' });
-  const calendar = new FakeCalendar([event]);
+test('existing gray Calendar event gets patched instead of recreated', async () => {
+  const event = existingEvent({ id: 'wrong-color-1', colorId: '8' });
+  const { calendar, assignmentsRef } = createBackfillContext([event]);
   const slotRef = new FakeSlotRef({
     name: 'Tester',
     password: 'pw',
@@ -230,6 +353,7 @@ test('existing Calendar event with wrong color gets updated', async () => {
   const result = await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',
@@ -239,7 +363,10 @@ test('existing Calendar event with wrong color gets updated', async () => {
 
   assert.equal(result.action, 'UPDATE');
   assert.equal(calendar.patchCount, 1);
-  assert.notEqual(calendar.eventsById.get(event.id).colorId, '11');
+  assert.equal(calendar.insertCount, 0);
+  assert.notEqual(calendar.eventsById.get(event.id).colorId, '8');
+  assert.ok(CALENDAR_COLOR_PALETTE.includes(calendar.eventsById.get(event.id).colorId));
+  assert.equal(slotRef.value.calendarSyncVersion, CALENDAR_SYNC_VERSION);
 });
 
 test('21:00 backfill event ends at next-day 00:00', () => {
@@ -251,10 +378,11 @@ test('21:00 backfill event ends at next-day 00:00', () => {
 
 test('backfilled reservation can be cancelled by reservationId and password', async () => {
   const slotRef = new FakeSlotRef({ name: 'Tester', password: 'pw' });
-  const calendar = new FakeCalendar();
+  const { calendar, assignmentsRef } = createBackfillContext();
   await processBackfillReservation({
     calendar,
     calendarId: 'calendar-id',
+    assignmentsRef,
     slotRef,
     date: '2026-08-08',
     time: '09:00',

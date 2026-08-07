@@ -50,32 +50,56 @@ export function printReconciliationSummary(summary, logger = console) {
   logger.log(`Failed: ${summary.failed}`);
 }
 
-export async function runProductionCalendarReconciliation({ logger = console } = {}) {
+async function loadProductionReconciliationResources() {
   const [
-    { getAdminDb },
-    { getCalendarClient },
-    { runCalendarBackfill },
+    firebaseAdmin,
+    googleCalendar,
+    calendarBackfill,
   ] = await Promise.all([
     import('../api/_lib/firebaseAdmin.js'),
     import('../api/_lib/googleCalendar.js'),
     import('../api/_lib/calendarBackfill.js'),
   ]);
 
-  const { summary, results } = await runCalendarBackfill({
-    db: getAdminDb(),
-    calendar: getCalendarClient(),
-    dryRun: false,
-    logger,
-  });
+  return {
+    getAdminDb: firebaseAdmin.getAdminDb,
+    closeAdminApps: firebaseAdmin.closeAdminApps,
+    getCalendarClient: googleCalendar.getCalendarClient,
+    runCalendarBackfill: calendarBackfill.runCalendarBackfill,
+  };
+}
 
-  printReconciliationSummary(summary, logger);
+export async function runProductionCalendarReconciliation({
+  logger = console,
+  loadResources = loadProductionReconciliationResources,
+} = {}) {
+  const {
+    getAdminDb,
+    closeAdminApps,
+    getCalendarClient,
+    runCalendarBackfill,
+  } = await loadResources();
 
-  if (summary.failed > 0) {
-    const failures = results.filter((result) => result.error);
-    failures.forEach((failure) => {
-      logger.error(`${failure.date} | ${failure.time} | ${failure.name} | ${failure.error}`);
+  try {
+    const { summary, results } = await runCalendarBackfill({
+      db: getAdminDb(),
+      calendar: getCalendarClient(),
+      dryRun: false,
+      logger,
     });
-    throw new Error('Calendar production reconciliation failed.');
+
+    printReconciliationSummary(summary, logger);
+
+    if (summary.failed > 0) {
+      const failures = results.filter((result) => result.error);
+      failures.forEach((failure) => {
+        logger.error(`${failure.date} | ${failure.time} | ${failure.name} | ${failure.error}`);
+      });
+      throw new Error('Calendar production reconciliation failed.');
+    }
+  } finally {
+    await closeAdminApps();
+    logger.log('Calendar reconciliation resources closed.');
   }
 }
 
@@ -93,6 +117,7 @@ export async function runVercelBuild({
   }
 
   await runReconciliation();
+  logger.log('Production build complete.');
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

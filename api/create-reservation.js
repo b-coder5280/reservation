@@ -10,6 +10,7 @@ import {
   validateReservationInput,
 } from './_lib/reservationRules.js';
 import {
+  CALENDAR_SYNC_VERSION,
   canRecoverCalendarBackedStaleReservation,
   claimSlotForCreate,
   makeCreatingReservation,
@@ -85,7 +86,8 @@ function isPersistedCalendarSync(reservation, reservationId, calendarEventId) {
     reservation &&
     reservation.reservationId === reservationId &&
     reservation.calendarEventId === calendarEventId &&
-    reservation.calendarSyncStatus === 'synced'
+    reservation.calendarSyncStatus === 'synced' &&
+    reservation.calendarSyncVersion === CALENDAR_SYNC_VERSION
   );
 }
 
@@ -159,7 +161,7 @@ export default async function handler(req, res) {
 
     let calendarEventId;
     try {
-      calendarEventId = await createReservationEvent({ date, time, name, reservationId });
+      calendarEventId = await createReservationEvent({ date, time, name, reservationId, db });
     } catch (error) {
       console.error('[reservation:create] calendar create failed', { date, time, reservationId, error: error?.message });
 
@@ -237,6 +239,7 @@ export default async function handler(req, res) {
         reservationId,
         calendarEventId,
         calendarSyncStatus: 'synced',
+        calendarSyncVersion: CALENDAR_SYNC_VERSION,
       },
     });
   } catch (error) {

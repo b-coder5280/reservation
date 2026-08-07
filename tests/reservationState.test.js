@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CALENDAR_SYNC_STATUS,
+  CALENDAR_SYNC_VERSION,
   STALE_SYNC_TIMEOUT_MS,
   canClaimSlotForCreate,
   canRecoverCalendarBackedStaleReservation,
@@ -39,6 +40,7 @@ test('normal create claims an empty slot and persists Calendar sync', () => {
   assert.equal(claimed.calendarSyncStatus, CALENDAR_SYNC_STATUS.CREATING);
   assert.equal(synced.calendarEventId, 'event-1');
   assert.equal(synced.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
+  assert.equal(synced.calendarSyncVersion, CALENDAR_SYNC_VERSION);
 });
 
 test('normal cancel claims synced reservation and removes only the matching reservationId', () => {
@@ -223,6 +225,7 @@ test('create Calendar persistence tolerates initial transaction null before actu
   assert.equal(synced.reservationId, 'rid-1');
   assert.equal(synced.calendarEventId, 'event-1');
   assert.equal(synced.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
+  assert.equal(synced.calendarSyncVersion, CALENDAR_SYNC_VERSION);
 });
 
 test('true absent reservation stays null without aborting expected-existing transactions', () => {

@@ -4,6 +4,8 @@ export const CALENDAR_SYNC_STATUS = {
   CANCELLING: 'cancelling',
 };
 
+export const CALENDAR_SYNC_VERSION = 2;
+
 // Intermediate sync states older than this are considered abandoned and recoverable.
 export const STALE_SYNC_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -75,6 +77,7 @@ export function persistCalendarSync(current, reservationId, calendarEventId, now
       ...current,
       calendarEventId,
       calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+      calendarSyncVersion: CALENDAR_SYNC_VERSION,
       syncUpdatedAt: nowMs,
     };
   }

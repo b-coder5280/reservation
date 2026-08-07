@@ -70,7 +70,23 @@ async function recoverStaleCalendarBackedSlot(slotRef, current, replacement, now
     false,
   );
 
-  return { claimed: replaceResult.committed };
+  const finalReservation = replaceResult.snapshot.val();
+  if (replaceResult.committed && finalReservation === null) {
+    return claimSlot(slotRef, replacement, Date.now());
+  }
+
+  return {
+    claimed: Boolean(replaceResult.committed && finalReservation?.reservationId === replacement.reservationId),
+  };
+}
+
+function isPersistedCalendarSync(reservation, reservationId, calendarEventId) {
+  return Boolean(
+    reservation &&
+    reservation.reservationId === reservationId &&
+    reservation.calendarEventId === calendarEventId &&
+    reservation.calendarSyncStatus === 'synced'
+  );
 }
 
 export default async function handler(req, res) {
@@ -176,7 +192,8 @@ export default async function handler(req, res) {
       updateResult = { committed: false };
     }
 
-    if (!updateResult.committed) {
+    const persistedReservation = updateResult.snapshot?.val();
+    if (!updateResult.committed || !isPersistedCalendarSync(persistedReservation, reservationId, calendarEventId)) {
       let calendarDeleted = false;
       let firebaseClean = false;
 

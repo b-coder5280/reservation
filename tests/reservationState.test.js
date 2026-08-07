@@ -179,3 +179,91 @@ test('stale Calendar-backed reservation is recovered only by matching reservatio
     undefined,
   );
 });
+
+test('legacy cancellation tolerates initial transaction null before actual legacy reservation', () => {
+  const legacy = { name: 'test', password: 'pw' };
+
+  assert.equal(
+    normalizeReservationForCancellation(null, { password: 'pw', reservationId: 'legacy-rid', nowMs: NOW }),
+    null,
+  );
+
+  const normalized = normalizeReservationForCancellation(legacy, {
+    password: 'pw',
+    reservationId: 'legacy-rid',
+    nowMs: NOW,
+  });
+
+  assert.equal(claimCancellation(null, { password: 'pw', reservationId: 'legacy-rid', nowMs: NOW + 1 }), null);
+  assert.equal(
+    claimCancellation(normalized, { password: 'pw', reservationId: 'legacy-rid', nowMs: NOW + 1 }).calendarSyncStatus,
+    CALENDAR_SYNC_STATUS.CANCELLING,
+  );
+});
+
+test('synced cancellation tolerates initial transaction null before actual synced reservation', () => {
+  const synced = syncedReservation();
+
+  assert.equal(normalizeReservationForCancellation(null, { password: 'pw', reservationId: 'rid-1', nowMs: NOW }), null);
+  assert.equal(claimCancellation(null, { password: 'pw', reservationId: 'rid-1', nowMs: NOW }), null);
+
+  const normalized = normalizeReservationForCancellation(synced, { password: 'pw', reservationId: 'rid-1', nowMs: NOW });
+  const claimed = claimCancellation(normalized, { password: 'pw', reservationId: 'rid-1', nowMs: NOW + 1 });
+
+  assert.equal(normalized.reservationId, 'rid-1');
+  assert.equal(claimed.calendarSyncStatus, CALENDAR_SYNC_STATUS.CANCELLING);
+});
+
+test('create Calendar persistence tolerates initial transaction null before actual creating reservation', () => {
+  const creating = makeCreatingReservation({ name: 'Tester', password: 'pw', reservationId: 'rid-1', nowMs: NOW });
+
+  assert.equal(persistCalendarSync(null, 'rid-1', 'event-1', NOW + 1), null);
+
+  const synced = persistCalendarSync(creating, 'rid-1', 'event-1', NOW + 1);
+  assert.equal(synced.reservationId, 'rid-1');
+  assert.equal(synced.calendarEventId, 'event-1');
+  assert.equal(synced.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
+});
+
+test('true absent reservation stays null without aborting expected-existing transactions', () => {
+  assert.equal(normalizeReservationForCancellation(null, { password: 'pw', reservationId: 'rid-1', nowMs: NOW }), null);
+  assert.equal(claimCancellation(null, { password: 'pw', reservationId: 'rid-1', nowMs: NOW }), null);
+  assert.equal(persistCalendarSync(null, 'rid-1', 'event-1', NOW), null);
+  assert.equal(removeReservationById(null, 'rid-1'), null);
+  assert.equal(restoreSyncedCancellation(null, 'rid-1', NOW), null);
+  assert.equal(
+    replaceStaleReservation(null, syncedReservation({ calendarSyncStatus: CALENDAR_SYNC_STATUS.CANCELLING }), syncedReservation(), NOW),
+    null,
+  );
+});
+
+test('password mismatch still aborts after authoritative reservation is visible', () => {
+  const synced = syncedReservation();
+
+  assert.equal(normalizeReservationForCancellation(null, { password: 'wrong', reservationId: 'rid-1', nowMs: NOW }), null);
+  assert.equal(normalizeReservationForCancellation(synced, { password: 'wrong', reservationId: 'rid-1', nowMs: NOW }), undefined);
+  assert.equal(claimCancellation(null, { password: 'wrong', reservationId: 'rid-1', nowMs: NOW }), null);
+  assert.equal(claimCancellation(synced, { password: 'wrong', reservationId: 'rid-1', nowMs: NOW }), undefined);
+});
+
+test('reservationId mismatch still aborts after authoritative reservation is visible', () => {
+  const synced = syncedReservation();
+
+  assert.equal(claimCancellation(null, { password: 'pw', reservationId: 'other-rid', nowMs: NOW }), null);
+  assert.equal(claimCancellation(synced, { password: 'pw', reservationId: 'other-rid', nowMs: NOW }), undefined);
+  assert.equal(persistCalendarSync(null, 'other-rid', 'event-1', NOW), null);
+  assert.equal(persistCalendarSync(synced, 'other-rid', 'event-1', NOW), undefined);
+  assert.equal(removeReservationById(null, 'other-rid'), null);
+  assert.equal(removeReservationById(synced, 'other-rid'), undefined);
+});
+
+test('concurrent replacement reservation is not mutated after initial transaction null', () => {
+  const replacement = syncedReservation({ reservationId: 'replacement-rid', calendarEventId: 'replacement-event' });
+
+  assert.equal(removeReservationById(null, 'old-rid'), null);
+  assert.equal(removeReservationById(replacement, 'old-rid'), undefined);
+  assert.equal(claimCancellation(null, { password: 'pw', reservationId: 'old-rid', nowMs: NOW }), null);
+  assert.equal(claimCancellation(replacement, { password: 'pw', reservationId: 'old-rid', nowMs: NOW }), undefined);
+  assert.equal(persistCalendarSync(null, 'old-rid', 'old-event', NOW), null);
+  assert.equal(persistCalendarSync(replacement, 'old-rid', 'old-event', NOW), undefined);
+});

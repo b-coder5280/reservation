@@ -50,6 +50,8 @@ export function claimSlotForCreate(current, reservation, nowMs = Date.now()) {
 }
 
 export function replaceStaleReservation(current, staleReservation, replacement, nowMs = Date.now()) {
+  if (current === null) return null;
+
   if (
     current?.reservationId === staleReservation.reservationId &&
     current.calendarSyncStatus === staleReservation.calendarSyncStatus &&
@@ -63,6 +65,8 @@ export function replaceStaleReservation(current, staleReservation, replacement, 
 }
 
 export function persistCalendarSync(current, reservationId, calendarEventId, nowMs = Date.now()) {
+  if (current === null) return null;
+
   if (
     current?.reservationId === reservationId &&
     current.calendarSyncStatus === CALENDAR_SYNC_STATUS.CREATING
@@ -79,12 +83,14 @@ export function persistCalendarSync(current, reservationId, calendarEventId, now
 }
 
 export function removeReservationById(current, reservationId) {
+  if (current === null) return null;
   if (current?.reservationId === reservationId) return null;
   return undefined;
 }
 
 export function normalizeReservationForCancellation(current, { password, reservationId, nowMs = Date.now() }) {
-  if (!current || current.password !== password) return undefined;
+  if (current === null) return null;
+  if (current.password !== password) return undefined;
 
   if (current.reservationId) {
     return current;
@@ -100,7 +106,9 @@ export function normalizeReservationForCancellation(current, { password, reserva
 }
 
 export function claimCancellation(current, { password, reservationId, nowMs = Date.now() }) {
-  if (!current || current.password !== password || current.reservationId !== reservationId) {
+  if (current === null) return null;
+
+  if (current.password !== password || current.reservationId !== reservationId) {
     return undefined;
   }
 
@@ -119,6 +127,8 @@ export function claimCancellation(current, { password, reservationId, nowMs = Da
 }
 
 export function restoreSyncedCancellation(current, reservationId, nowMs = Date.now()) {
+  if (current === null) return null;
+
   if (
     current?.reservationId === reservationId &&
     current.calendarSyncStatus === CALENDAR_SYNC_STATUS.CANCELLING

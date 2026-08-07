@@ -120,13 +120,21 @@ export default async function handler(req, res) {
   if (!claimResult.committed) {
     const snapshot = await slotRef.get();
     const current = snapshot.val();
-    if (!current || current.reservationId !== reservationId) {
+    if (!current) {
       return send(res, 200, { cancelled: true, alreadyAbsent: true });
     }
+    if (current.reservationId !== reservationId) return send(res, 409, { error: 'CANCELLATION_CONFLICT' });
     return send(res, 409, { error: 'SYNC_IN_PROGRESS' });
   }
 
   const claimedReservation = claimResult.snapshot.val();
+  if (!claimedReservation) {
+    return send(res, 200, { cancelled: true, alreadyAbsent: true });
+  }
+  if (claimedReservation.reservationId !== reservationId) {
+    return send(res, 409, { error: 'CANCELLATION_CONFLICT' });
+  }
+
   console.log('[reservation:cancel] cancellation claimed', { date, time, reservationId });
 
   if (claimedReservation.calendarEventId) {

@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/vercelBuild.js",
+    "normal-build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
     "calendar:backfill:dry": "node scripts/calendarBackfill.js --dry-run",

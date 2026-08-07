@@ -283,8 +283,9 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
   const summary = {
     scanned: rows.length,
     eligible: 0,
-    wouldCreate: 0,
-    wouldUpdate: 0,
+    created: 0,
+    updated: 0,
+    recovered: 0,
     alreadySynced: 0,
     skipped: 0,
     failed: 0,
@@ -306,8 +307,9 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
         now,
       });
 
-      if (result.action === 'CREATE') summary.wouldCreate += 1;
-      if (result.action === 'UPDATE' || result.action === 'RECOVER') summary.wouldUpdate += 1;
+      if (result.action === 'CREATE') summary.created += 1;
+      if (result.action === 'UPDATE') summary.updated += 1;
+      if (result.action === 'RECOVER') summary.recovered += 1;
       if (result.action === 'ALREADY_SYNCED') summary.alreadySynced += 1;
       if (result.action === 'SKIP') summary.skipped += 1;
       if (result.error) summary.failed += 1;

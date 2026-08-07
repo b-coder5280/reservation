@@ -163,6 +163,35 @@ test('already synced reservation remains idempotent and creates no duplicate', a
   assert.equal(calendar.insertCount, 0);
 });
 
+test('second production deployment produces zero duplicate Calendar events', async () => {
+  const calendar = new FakeCalendar();
+  const slotRef = new FakeSlotRef({ name: 'Tester', password: 'pw' });
+
+  await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    slotRef,
+    date: '2026-08-08',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  const second = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    slotRef,
+    date: '2026-08-08',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(second.action, 'ALREADY_SYNCED');
+  assert.equal(calendar.insertCount, 1);
+  assert.equal(calendar.eventsById.size, 1);
+});
+
 test('Calendar event exists but Firebase calendarEventId is missing gets recovered', async () => {
   const event = existingEvent({ id: 'recover-1', reservationId: 'rid-1' });
   const calendar = new FakeCalendar([event]);

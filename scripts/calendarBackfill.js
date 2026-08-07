@@ -20,8 +20,9 @@ const { summary, results } = await runCalendarBackfill({
 console.log('');
 console.log(`Scanned: ${summary.scanned}`);
 console.log(`Eligible: ${summary.eligible}`);
-console.log(`${dryRun ? 'Would create' : 'Created'}: ${summary.wouldCreate}`);
-console.log(`${dryRun ? 'Would update' : 'Updated/recovered'}: ${summary.wouldUpdate}`);
+console.log(`${dryRun ? 'Would create' : 'Created'}: ${summary.created}`);
+console.log(`${dryRun ? 'Would update' : 'Updated'}: ${summary.updated}`);
+console.log(`${dryRun ? 'Would recover' : 'Recovered'}: ${summary.recovered}`);
 console.log(`Already synced: ${summary.alreadySynced}`);
 console.log(`Skipped: ${summary.skipped}`);
 console.log(`Failed: ${summary.failed}`);

@@ -159,7 +159,7 @@ export default async function handler(req, res) {
 
     let calendarEventId;
     try {
-      calendarEventId = await createReservationEvent({ date, time, name });
+      calendarEventId = await createReservationEvent({ date, time, name, reservationId });
     } catch (error) {
       console.error('[reservation:create] calendar create failed', { date, time, reservationId, error: error?.message });
 

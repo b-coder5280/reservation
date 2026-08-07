@@ -8,6 +8,8 @@
     "build": "vite build",
     "lint": "eslint .",
     "test": "node --test",
+    "calendar:backfill:dry": "node scripts/calendarBackfill.js --dry-run",
+    "calendar:backfill": "node scripts/calendarBackfill.js",
     "preview": "vite preview"
   },
   "dependencies": {

@@ -1,6 +1,13 @@
 import { google } from 'googleapis';
+import {
+  DISTINCT_COLORS,
+  getReservationColorIndex,
+} from '../../src/shared/nameColors.js';
 
 const TIME_ZONE = 'Asia/Seoul';
+export const SPELL_RESERVATION_SOURCE = 'spell-reservation';
+
+let calendarEventColorsPromise;
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -10,7 +17,7 @@ function requireEnv(name) {
   return value;
 }
 
-function getCalendarClient() {
+export function getCalendarClient() {
   const auth = new google.auth.OAuth2(
     requireEnv('GOOGLE_CLIENT_ID'),
     requireEnv('GOOGLE_CLIENT_SECRET'),
@@ -21,6 +28,10 @@ function getCalendarClient() {
   });
 
   return google.calendar({ version: 'v3', auth });
+}
+
+export function getCalendarId() {
+  return requireEnv('GOOGLE_CALENDAR_ID');
 }
 
 function addHours(dateStr, time, hoursToAdd) {
@@ -57,18 +68,89 @@ export function getReservationEventTimes({ date, time }) {
   };
 }
 
-export async function createReservationEvent({ date, time, name }) {
-  const calendar = getCalendarClient();
-  const calendarId = requireEnv('GOOGLE_CALENDAR_ID');
+export function getReservationKey(date, time) {
+  return `${date}_${time}`;
+}
+
+function parseHexColor(hexColor) {
+  const normalized = String(hexColor || '').replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(normalized)) return null;
+
+  return {
+    r: Number.parseInt(normalized.slice(0, 2), 16),
+    g: Number.parseInt(normalized.slice(2, 4), 16),
+    b: Number.parseInt(normalized.slice(4, 6), 16),
+  };
+}
+
+function colorDistance(leftHex, rightHex) {
+  const left = parseHexColor(leftHex);
+  const right = parseHexColor(rightHex);
+  if (!left || !right) return Number.POSITIVE_INFINITY;
+
+  return ((left.r - right.r) ** 2) + ((left.g - right.g) ** 2) + ((left.b - right.b) ** 2);
+}
+
+export function getClosestCalendarColorId(websiteColor, eventColors) {
+  return Object.entries(eventColors || {})
+    .map(([colorId, color]) => ({
+      colorId,
+      distance: colorDistance(websiteColor, color.background),
+    }))
+    .sort((left, right) => {
+      if (left.distance !== right.distance) return left.distance - right.distance;
+      return Number(left.colorId) - Number(right.colorId);
+    })[0]?.colorId || '1';
+}
+
+export function buildWebsiteToCalendarColorMap(eventColors) {
+  return DISTINCT_COLORS.map((websiteColor) => getClosestCalendarColorId(websiteColor, eventColors));
+}
+
+export function getCalendarColorIdForNameFromEventColors(name, eventColors) {
+  const colorMap = buildWebsiteToCalendarColorMap(eventColors);
+  return colorMap[getReservationColorIndex(name)] || '1';
+}
+
+export async function getCalendarEventColors(calendar = getCalendarClient()) {
+  if (!calendarEventColorsPromise) {
+    calendarEventColorsPromise = calendar.colors.get().then((response) => response.data.event || {});
+  }
+
+  return calendarEventColorsPromise;
+}
+
+export async function getCalendarColorIdForName(name, calendar = getCalendarClient()) {
+  const eventColors = await getCalendarEventColors(calendar);
+  return getCalendarColorIdForNameFromEventColors(name, eventColors);
+}
+
+export function buildReservationEventResource({ date, time, name, reservationId, colorId }) {
   const eventTimes = getReservationEventTimes({ date, time });
+
+  return {
+    summary: `[실험 예약] ${name}`,
+    start: eventTimes.start,
+    end: eventTimes.end,
+    colorId,
+    extendedProperties: {
+      private: {
+        source: SPELL_RESERVATION_SOURCE,
+        reservationKey: getReservationKey(date, time),
+        reservationId,
+      },
+    },
+  };
+}
+
+export async function createReservationEvent({ date, time, name, reservationId, calendar = getCalendarClient() }) {
+  const calendarId = getCalendarId();
+  const colorId = await getCalendarColorIdForName(name, calendar);
+  const requestBody = buildReservationEventResource({ date, time, name, reservationId, colorId });
 
   const response = await calendar.events.insert({
     calendarId,
-    requestBody: {
-      summary: `[실험 예약] ${name}`,
-      start: eventTimes.start,
-      end: eventTimes.end,
-    },
+    requestBody,
   });
 
   if (!response.data.id) {
@@ -84,7 +166,7 @@ export async function deleteReservationEvent(calendarEventId) {
   try {
     const calendar = getCalendarClient();
     await calendar.events.delete({
-      calendarId: requireEnv('GOOGLE_CALENDAR_ID'),
+      calendarId: getCalendarId(),
       eventId: calendarEventId,
     });
     return { deleted: true, missing: false };

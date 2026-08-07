@@ -2,32 +2,10 @@ import { useState, useEffect, useMemo } from 'react'
 import './index.css'
 import { db } from './firebase'
 import { ref, onValue } from "firebase/database"
+import { getWebsiteColorForName } from './shared/nameColors'
 
 const TIMES = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00'];
 const DAYS_OF_WEEK = ['일', '월', '화', '수', '목', '금', '토'];
-
-const DISTINCT_COLORS = [
-  '#FFD1DC', // Light Pink
-  '#FFDFD3', // Peach
-  '#FFFFD1', // Cream Yellow
-  '#D1FFD6', // Pale Green
-  '#D1F5FF', // Light Sky
-  '#E0D1FF', // Lavender
-  '#FFD1F5', // Light Rose
-  '#D1FFF3', // Mint
-  '#FFE5D1', // Apricot
-  '#E2E2E2', // Light Silver
-  '#C4F5E1', // Magic Mint
-  '#DAE8FC', // Periwinkle
-  '#FFABAB', // Light Red
-  '#FFC3A0', // Deep Peach
-  '#D5AAFF', // Soft Purple
-  '#85E3FF', // Cyan
-  '#B9FBC0', // Light Emerald
-  '#FBE7C6', // Bisque
-  '#FF9CEE', // Hot Pink Light
-  '#A0C4FF', // Cornflower Light
-];
 
 function App() {
   const [now, setNow] = useState(new Date());
@@ -128,28 +106,8 @@ function App() {
     return () => unsubscribe();
   }, []);
 
-  // Calculate distinct colors for each user in the current view
-  const nameColorMap = useMemo(() => {
-    const allNames = new Set();
-    Object.values(reservations).forEach(daySlots => {
-      Object.values(daySlots).forEach(res => {
-        if (res && res.name) allNames.add(res.name.trim());
-      });
-    });
-
-    const sortedNames = Array.from(allNames).sort();
-    const map = {};
-    sortedNames.forEach((name, index) => {
-      map[name] = DISTINCT_COLORS[index % DISTINCT_COLORS.length];
-    });
-    console.log('Detected Names:', sortedNames); // Debugging purpose
-    return map;
-  }, [reservations]);
-
   const getColorForName = (name) => {
-    if (!name) return '#F7FAFC';
-    const trimmedName = name.trim();
-    return nameColorMap[trimmedName] || '#E2E2E2';
+    return getWebsiteColorForName(name);
   };
 
   const isSlotReservable = (dateStr, time) => {

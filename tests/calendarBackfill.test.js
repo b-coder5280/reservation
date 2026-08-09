@@ -73,6 +73,38 @@ class FakeAssignmentsRef {
   }
 }
 
+class FakeDbSlotRef {
+  constructor(db, date, time) {
+    this.db = db;
+    this.date = date;
+    this.time = time;
+  }
+
+  get value() {
+    return this.db.reservations?.[this.date]?.[this.time];
+  }
+
+  set value(next) {
+    if (!this.db.reservations[this.date]) this.db.reservations[this.date] = {};
+    this.db.reservations[this.date][this.time] = next;
+  }
+
+  async transaction(callback) {
+    const initial = callback(null);
+    if (initial === undefined) {
+      return { committed: false, snapshot: { val: () => this.value } };
+    }
+
+    const next = callback(this.value);
+    if (next === undefined) {
+      return { committed: false, snapshot: { val: () => this.value } };
+    }
+
+    this.value = next;
+    return { committed: true, snapshot: { val: () => this.value } };
+  }
+}
+
 class FakeCalendar {
   constructor(events = []) {
     this.eventsById = new Map(events.map((event) => [event.id, { ...event }]));
@@ -138,6 +170,10 @@ class FakeDb {
       return { get: async () => ({ val: () => this.reservations }) };
     }
     if (path === 'calendarColorAssignments') return this.assignmentsRef;
+    if (path.startsWith('reservations/')) {
+      const [, date, time] = path.split('/');
+      return new FakeDbSlotRef(this, date, time);
+    }
     throw new Error(`Unexpected ref path: ${path}`);
   }
 }
@@ -170,6 +206,47 @@ test('legacy reservation backfill creates Calendar event and persists Firebase s
   assert.equal(slotRef.value.calendarSyncVersion, CALENDAR_SYNC_VERSION);
   assert.ok(slotRef.value.reservationId);
   assert.ok(slotRef.value.calendarEventId);
+});
+
+test('old legacy reservation with no calendarEventId creates Calendar event', async () => {
+  const slotRef = new FakeSlotRef({ name: 'Legacy', password: 'pw' });
+  const { calendar, assignmentsRef } = createBackfillContext();
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-05',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(result.action, 'CREATE');
+  assert.equal(calendar.insertCount, 1);
+  assert.equal(slotRef.value.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
+  assert.equal(slotRef.value.calendarSyncVersion, CALENDAR_SYNC_VERSION);
+  assert.ok(slotRef.value.reservationId);
+  assert.ok(slotRef.value.calendarEventId);
+});
+
+test('currently-running 12:00-15:00 reservation at 13:30 reconciles', async () => {
+  const slotRef = new FakeSlotRef({ name: 'Running', password: 'pw' });
+  const { calendar, assignmentsRef } = createBackfillContext();
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-07',
+    time: '12:00',
+    reservation: slotRef.value,
+    now: new Date('2026-08-07T13:30:00+09:00'),
+  });
+
+  assert.equal(result.action, 'CREATE');
+  assert.equal(calendar.insertCount, 1);
+  assert.equal(slotRef.value.calendarSyncStatus, CALENDAR_SYNC_STATUS.SYNCED);
 });
 
 test('already synced reservation remains idempotent and creates no duplicate', async () => {
@@ -205,7 +282,7 @@ test('already synced reservation remains idempotent and creates no duplicate', a
   });
 
   assert.equal(first.action, 'UPDATE');
-  assert.equal(second.action, 'SKIP');
+  assert.equal(second.action, 'ALREADY_SYNCED');
   assert.equal(calendar.insertCount, 0);
 });
 
@@ -236,7 +313,7 @@ test('second production deployment produces zero duplicate Calendar events', asy
     now: NOW,
   });
 
-  assert.equal(second.action, 'SKIP');
+  assert.equal(second.action, 'ALREADY_SYNCED');
   assert.equal(calendar.getCount + calendar.listCount + calendar.insertCount + calendar.patchCount, callsBeforeSecond);
   assert.equal(calendar.insertCount, 1);
   assert.equal(calendar.eventsById.size, 1);
@@ -265,7 +342,38 @@ test('calendarSyncVersion 2 reservation skips Google API calls', async () => {
     now: NOW,
   });
 
-  assert.equal(result.action, 'SKIP');
+  assert.equal(result.action, 'ALREADY_SYNCED');
+  assert.equal(calendar.getCount, 0);
+  assert.equal(calendar.listCount, 0);
+  assert.equal(calendar.insertCount, 0);
+  assert.equal(calendar.patchCount, 0);
+  assert.equal(assignmentsRef.transactionCount, 0);
+});
+
+test('already-current old reservation skips Google API calls', async () => {
+  const event = existingEvent({ id: 'synced-old', date: '2026-08-05' });
+  const { calendar, assignmentsRef } = createBackfillContext([event]);
+  const slotRef = new FakeSlotRef({
+    name: 'Tester',
+    password: 'pw',
+    reservationId: 'rid-1',
+    calendarEventId: event.id,
+    calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+    calendarSyncVersion: CALENDAR_SYNC_VERSION,
+  });
+
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-05',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(result.action, 'ALREADY_SYNCED');
   assert.equal(calendar.getCount, 0);
   assert.equal(calendar.listCount, 0);
   assert.equal(calendar.insertCount, 0);
@@ -299,7 +407,8 @@ test('production reconciliation filters version 2 reservations before Calendar c
     });
 
     assert.equal(summary.scanned, 1);
-    assert.equal(summary.skipped, 1);
+    assert.equal(summary.alreadySynced, 1);
+    assert.equal(summary.needsReconciliation, 0);
     assert.equal(calendar.getCount, 0);
     assert.equal(calendar.listCount, 0);
     assert.equal(calendar.insertCount, 0);
@@ -314,8 +423,67 @@ test('production reconciliation filters version 2 reservations before Calendar c
   }
 });
 
+test('production reconciliation reports mixed migration categories without logging passwords', async () => {
+  const previousCalendarId = process.env.GOOGLE_CALENDAR_ID;
+  process.env.GOOGLE_CALENDAR_ID = 'calendar-id';
+  const recoverEvent = existingEvent({ id: 'recover-old', date: '2026-08-05', time: '12:00', name: 'Recover', reservationId: 'rid-recover' });
+  const syncedEvent = existingEvent({ id: 'synced-old', date: '2026-08-05', time: '15:00', name: 'Synced', reservationId: 'rid-synced' });
+  const calendar = new FakeCalendar([recoverEvent, syncedEvent]);
+  const db = new FakeDb({
+    '2026-08-05': {
+      '09:00': { name: 'Create', password: 'create-secret' },
+      '12:00': { name: 'Recover', password: 'recover-secret', reservationId: 'rid-recover' },
+      '15:00': {
+        name: 'Synced',
+        password: 'synced-secret',
+        reservationId: 'rid-synced',
+        calendarEventId: 'synced-old',
+        calendarSyncStatus: CALENDAR_SYNC_STATUS.SYNCED,
+        calendarSyncVersion: CALENDAR_SYNC_VERSION,
+      },
+      '10:00': { name: 'BadTime', password: 'bad-time-secret' },
+      '18:00': { password: 'missing-name-secret' },
+    },
+  });
+  const logs = [];
+  const logger = {
+    log: (line) => logs.push(line),
+    error: (line) => logs.push(line),
+  };
+
+  try {
+    const { summary } = await runCalendarBackfill({
+      db,
+      calendar,
+      logger,
+    });
+
+    assert.equal(summary.scanned, 5);
+    assert.equal(summary.needsReconciliation, 2);
+    assert.equal(summary.created, 1);
+    assert.equal(summary.recovered, 1);
+    assert.equal(summary.updated, 0);
+    assert.equal(summary.alreadySynced, 1);
+    assert.equal(summary.malformed, 2);
+    assert.equal(summary.failed, 0);
+    assert.equal(calendar.insertCount, 1);
+    assert.equal(calendar.eventsById.size, 3);
+    assert.equal(db.reservations['2026-08-05']['12:00'].calendarEventId, 'recover-old');
+    assert.ok(logs.some((line) => line.includes('2026-08-05 | 09:00 | Create') && line.includes('CREATE')));
+    assert.ok(logs.some((line) => line.includes('2026-08-05 | 12:00 | Recover') && line.includes('RECOVER')));
+    assert.ok(logs.some((line) => line.includes('2026-08-05 | 15:00 | Synced') && line.includes('ALREADY_SYNCED')));
+    assert.equal(logs.join('\n').includes('secret'), false);
+  } finally {
+    if (previousCalendarId === undefined) {
+      delete process.env.GOOGLE_CALENDAR_ID;
+    } else {
+      process.env.GOOGLE_CALENDAR_ID = previousCalendarId;
+    }
+  }
+});
+
 test('Calendar event exists but Firebase calendarEventId is missing gets recovered', async () => {
-  const event = existingEvent({ id: 'recover-1', reservationId: 'rid-1' });
+  const event = existingEvent({ id: 'recover-1', date: '2026-08-05', reservationId: 'rid-1' });
   const { calendar, assignmentsRef } = createBackfillContext([event]);
   const slotRef = new FakeSlotRef({
     name: 'Tester',
@@ -328,7 +496,7 @@ test('Calendar event exists but Firebase calendarEventId is missing gets recover
     calendarId: 'calendar-id',
     assignmentsRef,
     slotRef,
-    date: '2026-08-08',
+    date: '2026-08-05',
     time: '09:00',
     reservation: slotRef.value,
     now: NOW,
@@ -336,6 +504,44 @@ test('Calendar event exists but Firebase calendarEventId is missing gets recover
 
   assert.equal(result.action, 'RECOVER');
   assert.equal(slotRef.value.calendarEventId, 'recover-1');
+  assert.equal(calendar.insertCount, 0);
+});
+
+test('invalid time is reported as malformed', async () => {
+  const slotRef = new FakeSlotRef({ name: 'Tester', password: 'pw' });
+  const { calendar, assignmentsRef } = createBackfillContext();
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-08',
+    time: '10:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(result.action, 'MALFORMED');
+  assert.match(result.error, /time/i);
+  assert.equal(calendar.insertCount, 0);
+});
+
+test('missing name is reported as malformed', async () => {
+  const slotRef = new FakeSlotRef({ password: 'pw' });
+  const { calendar, assignmentsRef } = createBackfillContext();
+  const result = await processBackfillReservation({
+    calendar,
+    calendarId: 'calendar-id',
+    assignmentsRef,
+    slotRef,
+    date: '2026-08-08',
+    time: '09:00',
+    reservation: slotRef.value,
+    now: NOW,
+  });
+
+  assert.equal(result.action, 'MALFORMED');
+  assert.match(result.error, /name/i);
   assert.equal(calendar.insertCount, 0);
 });
 
@@ -414,8 +620,8 @@ test('slot replaced while backfill is running is not overwritten', async () => {
   assert.equal(slotRef.value.reservationId, 'replacement-rid');
 });
 
-test('backfill action reports skip for missing name', () => {
-  assert.equal(getBackfillAction({ reservation: {}, existingEvent: null, desiredEvent: {} }), 'SKIP');
+test('backfill action reports malformed for missing name', () => {
+  assert.equal(getBackfillAction({ reservation: {}, existingEvent: null, desiredEvent: {} }), 'MALFORMED');
 });
 
 test('event update detects missing extended properties', () => {

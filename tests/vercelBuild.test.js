@@ -85,12 +85,12 @@ test('production reconciliation closes Firebase Admin resources after success', 
       runCalendarBackfill: async () => ({
         summary: {
           scanned: 0,
-          eligible: 0,
+          needsReconciliation: 0,
           created: 0,
           updated: 0,
           recovered: 0,
           alreadySynced: 0,
-          skipped: 0,
+          malformed: 0,
           failed: 0,
         },
         results: [],
@@ -135,16 +135,18 @@ test('safe production summary includes reconciliation counters', () => {
   const logger = createLogger();
   printReconciliationSummary({
     scanned: 5,
-    eligible: 4,
+    needsReconciliation: 3,
     created: 1,
     updated: 1,
     recovered: 1,
     alreadySynced: 1,
-    skipped: 1,
+    malformed: 1,
     failed: 0,
   }, logger);
 
   assert.ok(logger.messages.includes('Calendar production reconciliation'));
+  assert.ok(logger.messages.includes('Needs reconciliation: 3'));
   assert.ok(logger.messages.includes('Created: 1'));
   assert.ok(logger.messages.includes('Recovered: 1'));
+  assert.ok(logger.messages.includes('Malformed: 1'));
 });

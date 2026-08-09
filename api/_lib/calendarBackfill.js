@@ -11,10 +11,7 @@ import { CALENDAR_SYNC_STATUS, CALENDAR_SYNC_VERSION } from './reservationState.
 import { getWebsiteColorForName } from '../../src/shared/nameColors.js';
 
 const VALID_TIMES = new Set(['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00']);
-
-function slotStartDate(date, time) {
-  return new Date(`${date}T${time}:00+09:00`);
-}
+const DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 function getPrivateProperties(event) {
   return event?.extendedProperties?.private || {};
@@ -28,9 +25,32 @@ function sameEventDateTime(left, right) {
   return left?.dateTime === right?.dateTime && left?.timeZone === right?.timeZone;
 }
 
-export function isEligibleBackfillSlot(date, time, now = new Date()) {
-  if (!VALID_TIMES.has(time)) return false;
-  return slotStartDate(date, time) >= now;
+export function isValidBackfillDate(date) {
+  if (!DATE_PATTERN.test(date)) return false;
+
+  const [year, month, day] = date.split('-').map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return (
+    parsed.getUTCFullYear() === year &&
+    parsed.getUTCMonth() === month - 1 &&
+    parsed.getUTCDate() === day
+  );
+}
+
+export function isEligibleBackfillSlot(date, time) {
+  return isValidBackfillDate(date) && VALID_TIMES.has(time);
+}
+
+export function validateBackfillRow({ date, time, reservation }) {
+  if (!isValidBackfillDate(date)) return { isValid: false, reason: 'Invalid reservation date.' };
+  if (!VALID_TIMES.has(time)) return { isValid: false, reason: 'Invalid reservation time slot.' };
+  if (!reservation || typeof reservation !== 'object' || Array.isArray(reservation)) {
+    return { isValid: false, reason: 'Invalid reservation record structure.' };
+  }
+  if (!reservation.name || typeof reservation.name !== 'string') {
+    return { isValid: false, reason: 'Missing reservation name.' };
+  }
+  return { isValid: true };
 }
 
 export function flattenReservations(reservations) {
@@ -61,7 +81,7 @@ export function eventNeedsUpdate(event, desiredEvent) {
 }
 
 export function getBackfillAction({ reservation, existingEvent, desiredEvent }) {
-  if (!reservation?.name) return 'SKIP';
+  if (!reservation?.name) return 'MALFORMED';
   if (!existingEvent) return 'CREATE';
   if (!reservation.calendarEventId || reservation.calendarEventId !== existingEvent.id) return 'RECOVER';
   if (eventNeedsUpdate(existingEvent, desiredEvent)) return 'UPDATE';
@@ -214,18 +234,19 @@ export async function processBackfillReservation({
   time,
   reservation,
   dryRun = false,
-  now = new Date(),
 }) {
   const websiteColor = getWebsiteColorForName(reservation?.name);
+  const validation = validateBackfillRow({ date, time, reservation });
 
-  if (!reservation?.name || !isEligibleBackfillSlot(date, time, now)) {
+  if (!validation.isValid) {
     return {
       date,
       time,
       name: reservation?.name || '',
       websiteColor,
       calendarColorId: '',
-      action: 'SKIP',
+      action: 'MALFORMED',
+      error: validation.reason,
     };
   }
 
@@ -236,7 +257,7 @@ export async function processBackfillReservation({
       name: reservation.name,
       websiteColor,
       calendarColorId: '',
-      action: 'SKIP',
+      action: 'ALREADY_SYNCED',
     };
   }
 
@@ -252,7 +273,7 @@ export async function processBackfillReservation({
       name: reservation.name,
       websiteColor,
       calendarColorId: '',
-      action: 'SKIP',
+      action: 'FAILED',
       error: 'Reservation changed before backfill could claim identity.',
     };
   }
@@ -312,7 +333,7 @@ async function processWithConcurrency(rows, concurrency, worker) {
   return results;
 }
 
-export async function runCalendarBackfill({ db, calendar, dryRun = false, now = new Date(), logger = console }) {
+export async function runCalendarBackfill({ db, calendar, dryRun = false, logger = console }) {
   const calendarId = getCalendarId();
   const assignmentsRef = db.ref('calendarColorAssignments');
 
@@ -321,33 +342,47 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
   const results = [];
   const summary = {
     scanned: rows.length,
-    eligible: 0,
+    needsReconciliation: 0,
     created: 0,
     updated: 0,
     recovered: 0,
     alreadySynced: 0,
-    skipped: 0,
+    malformed: 0,
     failed: 0,
   };
 
   const rowsToProcess = [];
 
   for (const row of rows) {
-    if (isEligibleBackfillSlot(row.date, row.time, now)) summary.eligible += 1;
+    const validation = validateBackfillRow(row);
 
-    if (!row.reservation?.name || !isEligibleBackfillSlot(row.date, row.time, now) || isCurrentCalendarSync(row.reservation)) {
-      const skipped = {
+    if (!validation.isValid) {
+      const malformed = {
         date: row.date,
         time: row.time,
         name: row.reservation?.name || '',
         websiteColor: getWebsiteColorForName(row.reservation?.name),
         calendarColorId: '',
-        action: 'SKIP',
+        action: 'MALFORMED',
+        error: validation.reason,
       };
-      summary.skipped += 1;
-      results.push(skipped);
-      logger.log(`${skipped.date} | ${skipped.time} | ${skipped.name} | ${skipped.websiteColor} | ${skipped.calendarColorId} | ${skipped.action}`);
+      summary.malformed += 1;
+      results.push(malformed);
+      logger.error(`${malformed.date} | ${malformed.time} | ${malformed.name} | ${malformed.websiteColor} | ${malformed.calendarColorId} | MALFORMED | ${malformed.error}`);
+    } else if (isCurrentCalendarSync(row.reservation)) {
+      const alreadySynced = {
+        date: row.date,
+        time: row.time,
+        name: row.reservation.name,
+        websiteColor: getWebsiteColorForName(row.reservation.name),
+        calendarColorId: '',
+        action: 'ALREADY_SYNCED',
+      };
+      summary.alreadySynced += 1;
+      results.push(alreadySynced);
+      logger.log(`${alreadySynced.date} | ${alreadySynced.time} | ${alreadySynced.name} | ${alreadySynced.websiteColor} | ${alreadySynced.calendarColorId} | ${alreadySynced.action}`);
     } else {
+      summary.needsReconciliation += 1;
       rowsToProcess.push(row);
     }
   }
@@ -364,7 +399,6 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
         time: row.time,
         reservation: row.reservation,
         dryRun,
-        now,
       });
     } catch (error) {
       return {
@@ -373,7 +407,7 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
         name: row.reservation?.name || '',
         websiteColor: getWebsiteColorForName(row.reservation?.name),
         calendarColorId: '',
-        action: 'SKIP',
+        action: 'FAILED',
         error: error?.message || 'Unknown error',
       };
     }
@@ -384,11 +418,12 @@ export async function runCalendarBackfill({ db, calendar, dryRun = false, now = 
     if (result.action === 'UPDATE') summary.updated += 1;
     if (result.action === 'RECOVER') summary.recovered += 1;
     if (result.action === 'ALREADY_SYNCED') summary.alreadySynced += 1;
-    if (result.action === 'SKIP') summary.skipped += 1;
-    if (result.error) summary.failed += 1;
+    if (result.action === 'MALFORMED') summary.malformed += 1;
+    if (result.error && result.action !== 'MALFORMED') summary.failed += 1;
     results.push(result);
 
-    const line = `${result.date} | ${result.time} | ${result.name} | ${result.websiteColor} | ${result.calendarColorId} | ${result.error ? 'FAILED' : result.action}${result.error ? ` | ${result.error}` : ''}`;
+    const resultAction = result.action === 'MALFORMED' ? 'MALFORMED' : result.error ? 'FAILED' : result.action;
+    const line = `${result.date} | ${result.time} | ${result.name} | ${result.websiteColor} | ${result.calendarColorId} | ${resultAction}${result.error ? ` | ${result.error}` : ''}`;
     if (result.error) logger.error(line);
     else logger.log(line);
   });

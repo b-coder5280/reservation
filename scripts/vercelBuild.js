@@ -41,12 +41,12 @@ export function runCommand(command, args, options = {}) {
 export function printReconciliationSummary(summary, logger = console) {
   logger.log('Calendar production reconciliation');
   logger.log(`Scanned: ${summary.scanned}`);
-  logger.log(`Eligible: ${summary.eligible}`);
+  logger.log(`Needs reconciliation: ${summary.needsReconciliation}`);
   logger.log(`Created: ${summary.created}`);
   logger.log(`Updated: ${summary.updated}`);
   logger.log(`Recovered: ${summary.recovered}`);
   logger.log(`Already synced: ${summary.alreadySynced}`);
-  logger.log(`Skipped: ${summary.skipped}`);
+  logger.log(`Malformed: ${summary.malformed}`);
   logger.log(`Failed: ${summary.failed}`);
 }
 
@@ -91,7 +91,7 @@ export async function runProductionCalendarReconciliation({
     printReconciliationSummary(summary, logger);
 
     if (summary.failed > 0) {
-      const failures = results.filter((result) => result.error);
+      const failures = results.filter((result) => result.error && result.action !== 'MALFORMED');
       failures.forEach((failure) => {
         logger.error(`${failure.date} | ${failure.time} | ${failure.name} | ${failure.error}`);
       });
